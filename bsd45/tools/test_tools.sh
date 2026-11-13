@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# test_tools.sh - /bin/head and /bin/tail acceptance (bash twin).
+set -uo pipefail
+ws="$(cd "$(dirname "$0")/.." && pwd)"
+iso="${1:-$ws/out/BSD45-ELF-x86.iso}"
+[ -f "$iso" ] || { echo "ISO not found: $iso" >&2; exit 1; }
+fails=0
+check() { local n="$1" l="$2" x; shift 2; for x in "$@"; do
+  if printf '%s' "$l" | grep -qF -- "$x"; then echo "  ok   $n: found $x"
+  else echo "  FAIL $n: missing $x" >&2; fails=$((fails+1)); fi; done; }
+
+echo "tools acceptance: /bin/head and /bin/tail"
+log="$("$ws/tools/run_qemu_test.sh" -Iso "$iso" \
+  -Keys "shell|head -2 /readme.txt|tail -2 /readme.txt|head -1 /readme.txt|exit 0" \
+  -WaitFor "user exit" -TimeoutSec 120)"
+check head  "$log" "BSD45-ELF-x86  -  4.4BSD-Lite2 i386 ELF kernel"
+check tail  "$log" "bsd45> help"
+check exit  "$log" "[user exit 0]"
+printf '%s' "$log" | grep -q '\*\*\* TRAP' && { echo "  FAIL kernel trap" >&2; fails=$((fails+1)); }
+if [ "$fails" -ne 0 ]; then echo "tools: FAILED ($fails)" >&2; exit 1; fi
+echo "tools: PASSED"
+exit 0
