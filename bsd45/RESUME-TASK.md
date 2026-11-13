@@ -497,6 +497,64 @@ git add -A && git commit -m "S13: /dev/ps + /bin/ps" && git push origin main
 2. **`/bin/ps` 增强**：加 `comm`（进程名）、`-a`/`-x` 过滤；再给 `kill` 支持 `%job`
 3. **真 `fg`/`bg`**：sh 监视模式 + `tcsetpgrp` + 后台读终端时 `SIGTTIN`（工作量最大）
 
+## S100（长期方向，未开工）微内核与宏内核的边界：盘点、对照实验与取舍
+
+> 这是**架构方向**任务，不是功能增量。它不影响 S11–S99 的日常功能开发，
+> 但每完成一个 S1xx 阶段，都应该回来把这份边界表更新一次。
+
+### 现状（宏内核）
+
+当前 BSD45 是**宏内核**：VFS/vnode 层、tmpfs、ISO9660、ATAPI 驱动、控制台 tty、
+进程表与调度、信号与管道，全部跑在 ring 0 的同一个地址空间里。
+好处是本次会话反复验证过的：改一处 `vnodeops` 就能同时影响 syscall 与 execve；
+坏处是任何 FS/驱动的 bug 都能让整机 triple fault（TRAP 12 那几次就是例子）。
+
+### S100.1 边界盘点（先做，纯文档，1 天量级）
+
+产出一张表 `docs/kernel-boundary.md`，逐模块标注：
+
+| 模块 | 当前实现 | 能否移出内核 | 依赖的内核原语 |
+|---|---|---|---|
+| vnode/VFS | `kernel/fs/vfs.c` | 部分（转发层留下） | 拷贝 in/out、vnode 句柄 |
+| tmpfs | `vfs.c` 内 | **可以**（首选实验对象） | 页分配、共享内存 |
+| ISO9660 | `kernel/fs/isofs.c` | 可以（只读、无并发） | ATAPI 块读、缓存 |
+| ATAPI | `kernel/driver/atapi.c` | 驱动力留在内核，协议栈可上移 | 端口 IO、DMA |
+| 控制台 tty | `kernel/driver/pccon.c` | 行规程可上移，中断处理留下 | 中断、环形缓冲 |
+| 进程/信号/管道 | `kernel/other/usermode.c` | **不建议**（微内核也留在核内） | — |
+
+判据：**只有「必须接触特权指令/中断/页表」的才留内核**，其余都可以按 IPC 服务化。
+
+### S100.2 设计对照（文档 + 评审）
+
+写 `docs/microkernel-design.md`，给出两套方案的成本对比：
+
+- **方案 A（宏内核基线）**：现状，补齐模块化（`vnodeops` 已经是雏形）、
+  加内核内断言与崩溃后恢复，把「一个驱动崩全机」的概率压低
+- **方案 B（微内核化）**：内核只留调度/页表/IPC/中断；`fs_server`、`tty_server`
+  以用户态进程运行，VFS 变成「把 vnode 操作翻译成 IPC」的薄转发层
+- 对比维度：syscall 延迟、内存占用、代码行数、崩溃隔离性、调试复杂度
+
+### S100.3 最小可行实验（只做 tmpfs）
+
+1. 内核保留 `vnodeops` 接口，但 `tmpfs_*` 的操作改为向 `fs_server` 发 IPC
+   （同步消息 + 共享页做数据搬运）
+2. `fs_server` 作为 `/sbin/fs_server` 用户态进程，由 init 启动
+3. 早期可用「共享内存 + 自旋」代替完整消息队列，先跑通再优化
+4. 关键指标：`cd /tmp; echo x > a; cat a` 与 15 套验收必须继续全绿
+
+### S100.4 度量与结论
+
+产出 `docs/kernel-boundary-results.md`：
+- 同一组验收（`tools/all_tests.sh`）在两套方案下的耗时
+- 故障注入实验：在 `fs_server` 里主动 panic，宏内核整机挂 vs 微内核只丢文件服务
+- 给出「这个项目应该停在哪一侧」的明确结论与理由
+
+### 硬性约束
+
+1. **不许为了微内核化牺牲已有验收**：任何方案都必须让 15 套全绿；
+2. **先文档后代码**：S100.1/S100.2 没写完不开始 S100.3；
+3. **可回退**：微内核化实验放在独立分支（`exp/microkernel`），主线保持宏内核。
+
 ## 1. 任务目标（原始需求）
 
 在 4.4BSD-Lite2 i386 ELF 内核上实现 Solaris 式的 VFS/root 文件系统、
