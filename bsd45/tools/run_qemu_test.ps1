@@ -14,6 +14,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Callers coming from bash (or -File) can only pass one string: accept the
+# same pipe-separated form as run_qemu_test.sh ("a|b|c").
+if ($Keys.Count -eq 1 -and $Keys[0].Contains('|')) { $Keys = $Keys[0].Split('|') }
 $ws = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 if (!$Iso) { $Iso = Join-Path $ws "out\BSD45-ELF-x86.iso" }
 . (Join-Path $ws "tools-find.ps1")

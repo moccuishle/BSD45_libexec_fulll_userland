@@ -327,6 +327,35 @@ shell: "sleep 5 &" + jobs -> [1] 2  sleep 5 ; kill -l 列出信号
    cat readme.txt`（相对）、`cd /nope` 报错。
 
 
+### S10.4 mount 表 + chdir/相对路径 ✅（2026-11-14 完成）
+
+**实现**（`kernel/fs/vfs.c`、`kernel/other/usermode.c`、`libexec/*`）：
+
+1. **路径绝对化只在系统调用层做一次**：新增 `vfs_absolutize(cwd, in, out, len)`
+   （有界、单遍、处理 `.`/`..`、去重斜杠、去尾斜杠），`usermode.c` 里
+   `path_arg()` 把 `open/stat/access/unlink/mkdir/rmdir/rename/chdir/execve`
+   的路径参数统一转换。`vfs_namei()` / `vfs_lookup_parent()` 保持原样，
+   只吃绝对路径 —— 因此 tmpfs 的 `dv == &tmp_root` 身份判断不受影响。
+2. **cwd**：`struct uproc` 增加 `p_cwd[128]`，`proc_alloc` 置 `/`，
+   `fork/vfork` 继承；`chdir(12)` 用 `vfs_namei` 校验目录后写入，
+   `getcwd(326)` 拷出（`ERANGE`/`ENOTDIR` 已定义）。
+3. `echo hi > a`、`ls`（`opendir(".")`）、`cd ..` 全部走相对路径。
+
+**踩的坑（都是 S10.4 里的真 bug）**：
+
+- 最初把绝对化塞进 `vfs_namei()`/`vfs_lookup_parent()` 内部 → 路径被二次改写，
+  `dv == &tmp_root` 失效，**S8/S10.3 全红**（已回退，改为只在 syscall 层做）。
+- `vfs_lookup_parent()` 用 `slash - path` 而 `slash` 指向绝对化缓冲 → 指针跨缓冲
+  相减，`dir` 变垃圾（相对路径创建必 ENOENT）。
+- `vfs_absolutize()` 先补 `/` 再给组件补 `/` → 生成 `"/tmp//a"`，
+  `lookup_parent` 取到 `dir="/tmp/"`，`vfs_namei("/tmp/")` 空组件 ENOENT
+  → 改成「按需补斜杠」+ 去尾斜杠。
+- `fork` 没继承 `p_cwd` → 子进程 `ls`/`cat` 的 cwd 丢回 `/`。
+
+**验收**：`tools/test_s10_4.ps1` / `test_s10_4.sh`：
+`cd /tmp; pwd` → `/tmp`；`echo vfs-rel > a; cat a` → `vfs-rel`；
+`cd /bin; ls` → `sh.elf`；无 TRAP。11 套验收全绿。
+
 ## 1. 任务目标（原始需求）
 
 在 4.4BSD-Lite2 i386 ELF 内核上实现 Solaris 式的 VFS/root 文件系统、

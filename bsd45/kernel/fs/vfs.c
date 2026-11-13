@@ -505,6 +505,69 @@ struct vnodeops tmpfs_vnodeops = {
 	tmpfs_rename_op
 };
 
+
+/*
+ * S10.4: compose an absolute path from cwd + in.  This is the ONLY place
+ * that knows about the cwd; vfs_namei()/vfs_lookup_parent() keep taking
+ * absolute paths exactly as before, so the tmpfs "dv == &tmp_root" identity
+ * checks are unaffected.
+ */
+int
+vfs_absolutize(const char *cwd, const char *in, char *out, unsigned outlen)
+{
+	unsigned o = 0, i = 0, n, k;
+
+	if (in == 0 || in[0] == 0)
+		return (-ENOENT);
+	if (in[0] != '/') {
+		if (cwd == 0 || cwd[0] != '/')
+			return (-ENOENT);
+		while (cwd[i] != 0 && o + 1 < outlen)
+			out[o++] = cwd[i++];
+		i = 0;
+	} else {
+		if (outlen < 2)
+			return (-ENAMETOOLONG);
+		out[o++] = '/';
+		i = 1;
+	}
+	while (in[i] != 0) {
+		while (in[i] == '/')
+			i++;
+		if (in[i] == 0)
+			break;
+		n = 0;
+		while (in[i + n] != 0 && in[i + n] != '/')
+			n++;
+		if (n == 1 && in[i] == '.') {
+			i += n;
+			continue;
+		}
+		if (n == 2 && in[i] == '.' && in[i + 1] == '.') {
+			while (o > 1 && out[o - 1] != '/')
+				o--;
+			if (o > 1)
+				o--;
+			i += n;
+			continue;
+		}
+		if (o + n + 2 > outlen)
+			return (-ENAMETOOLONG);
+		if (o == 0 || out[o - 1] != '/')
+			out[o++] = '/';
+		for (k = 0; k < n; k++)
+			out[o++] = in[i + k];
+		i += n;
+	}
+	if (o == 0)
+		out[o++] = '/';
+	/* "/bin/" -> "/bin": vfs_namei() treats an empty component as ENOENT */
+	if (o > 1 && out[o - 1] == '/')
+		o--;
+	out[o] = 0;
+	return (0);
+}
+
 /* ---------------------------------------------------------------- namei */
 
 void

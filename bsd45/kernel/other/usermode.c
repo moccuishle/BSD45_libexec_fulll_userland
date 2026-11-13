@@ -61,6 +61,7 @@
 #define	EBADF		9
 #define	ECHILD		10
 #define	ENOMEM		12
+#define	ERANGE		34
 #define	EACCES		13
 #define	EFAULT		14
 #define	ENOTDIR		20
@@ -189,6 +190,7 @@ struct uproc {
 	unsigned	p_sigcatch;	/* handler installed */
 	unsigned	p_sighand[NSIG]; /* user handler addresses */
 	int		p_pgrp;		/* process group */
+	char		p_cwd[128];	/* current working directory */
 	int		p_stopsig;	/* signal that stopped us (0 = running) */
 	int		p_termsig;	/* signal that killed us (0 = exited) */
 	int		p_cont;		/* SIGCONT arrived while stopped */
@@ -954,6 +956,7 @@ fd_ref(struct fd *fp)
 
 static int user_ok(unsigned p, unsigned len);
 extern void resume_user(unsigned pd, struct sysregs *r);
+extern int vfs_absolutize(const char *, const char *, char *, unsigned);
 
 #define	SCRATCH2_PD	0xFE203000
 #define	SCRATCH2_PT	0xFE204000
@@ -1011,6 +1014,8 @@ proc_alloc(void)
 			int fd;
 
 			bzero(&procs[i], sizeof(procs[i]));
+			procs[i].p_cwd[0] = '/';
+			procs[i].p_cwd[1] = 0;
 			for (fd = 0; fd < 3; fd++) {
 				procs[i].fds[fd].used = 1;
 				procs[i].fds[fd].type = FD_CONSOLE;
@@ -1096,6 +1101,7 @@ do_fork(struct sysregs *r)
 	p->ppid = cur->pid;
 	p->pd = pd;
 	p->brk_mapped = cur->brk_mapped;
+	bcopy(cur->p_cwd, p->p_cwd, sizeof(p->p_cwd));
 	bcopy(cur->fds, p->fds, sizeof(p->fds));
 	{
 		int i;
@@ -1142,6 +1148,7 @@ do_vfork(struct sysregs *r)
 	p->ppid = cur->pid;
 	p->pd = pd;
 	p->brk_mapped = cur->brk_mapped;
+	bcopy(cur->p_cwd, p->p_cwd, sizeof(p->p_cwd));
 	bcopy(cur->fds, p->fds, sizeof(p->fds));
 	p->regs = *r;
 	p->regs.eax = 0;
@@ -1458,6 +1465,18 @@ do_wait4(int want, unsigned statusp, int options, struct sysregs *r)
 }
 
 /* --------------------------------------------------------------- syscalls */
+/* Absolutize a path argument once, here in the syscall layer. */
+static int
+path_arg(unsigned uptr, char *buf, unsigned len)
+{
+	char rel[128];
+
+	if (user_str(uptr, rel, sizeof(rel)) < 0)
+		return (-EFAULT);
+	return (vfs_absolutize(cur->p_cwd, rel, buf, len));
+}
+
+
 
 static int
 user_ok(unsigned p, unsigned len)
@@ -1898,7 +1917,7 @@ syscall_dispatch(struct sysregs *r)
 		int fd, flags = (int)r->ecx, rw, rv;
 		unsigned mode = 0, size = 0;
 
-		if (user_str(r->ebx, path, sizeof(path)) < 0) {
+		if (path_arg(r->ebx, path, sizeof(path)) < 0) {
 			r->eax = (unsigned)-EFAULT;
 			break;
 		}
@@ -1942,7 +1961,7 @@ syscall_dispatch(struct sysregs *r)
 	case 59: {			/* execve(path, argv, envp) */
 		char path[128];
 
-		if (user_str(r->ebx, path, sizeof(path)) < 0) {
+		if (path_arg(r->ebx, path, sizeof(path)) < 0) {
 			r->eax = (unsigned)-EFAULT;
 			break;
 		}
@@ -2004,7 +2023,7 @@ syscall_dispatch(struct sysregs *r)
 		char path[128];
 		struct vnode *vp = 0;
 
-		if (user_str(r->ebx, path, sizeof(path)) < 0) {
+		if (path_arg(r->ebx, path, sizeof(path)) < 0) {
 			r->eax = (unsigned)-EFAULT;
 			break;
 		}
@@ -2214,7 +2233,7 @@ syscall_dispatch(struct sysregs *r)
 		struct vnode *vp = 0;
 		unsigned mode = 0, size = 0;
 
-		if (user_str(r->ebx, path, sizeof(path)) < 0 ||
+		if (path_arg(r->ebx, path, sizeof(path)) < 0 ||
 		    !user_ok(r->ecx, STAT_SIZE)) {
 			r->eax = (unsigned)-EFAULT;
 			break;
@@ -2576,7 +2595,7 @@ syscall_dispatch(struct sysregs *r)
 		char name[48];
 		int rv;
 
-		if (user_str(r->ebx, path, sizeof(path)) < 0) {
+		if (path_arg(r->ebx, path, sizeof(path)) < 0) {
 			r->eax = (unsigned)-EFAULT;
 			break;
 		}
@@ -2597,8 +2616,8 @@ syscall_dispatch(struct sysregs *r)
 	case 128: {			/* rename(old, new) */
 		char oldp[128], newp[128];
 
-		if (user_str(r->ebx, oldp, sizeof(oldp)) < 0 ||
-		    user_str(r->ecx, newp, sizeof(newp)) < 0) {
+		if (path_arg(r->ebx, oldp, sizeof(oldp)) < 0 ||
+		    path_arg(r->ecx, newp, sizeof(newp)) < 0) {
 			r->eax = (unsigned)-EFAULT;
 			break;
 		}
@@ -2616,7 +2635,7 @@ syscall_dispatch(struct sysregs *r)
 		struct vnode *vp = 0;
 		int rv;
 
-		if (user_str(r->ebx, path, sizeof(path)) < 0) {
+		if (path_arg(r->ebx, path, sizeof(path)) < 0) {
 			r->eax = (unsigned)-EFAULT;
 			break;
 		}
@@ -2632,7 +2651,7 @@ syscall_dispatch(struct sysregs *r)
 		struct vnode *dv = 0;
 		int rv;
 
-		if (user_str(r->ebx, path, sizeof(path)) < 0) {
+		if (path_arg(r->ebx, path, sizeof(path)) < 0) {
 			r->eax = (unsigned)-EFAULT;
 			break;
 		}
@@ -2645,15 +2664,46 @@ syscall_dispatch(struct sysregs *r)
 		vn_put(dv);
 		break;
 	}
-	case 12:			/* chdir */
-		r->eax = (unsigned)-ENOENT;
-		break;
-	case 74: case 73: case 65:	/* mprotect/munmap/msync */
+	case 12: {			/* chdir(path) */
+		char path[128];
+		struct vnode *vp = 0;
+		int rv;
+
+		if (path_arg(r->ebx, path, sizeof(path)) < 0) {
+			r->eax = (unsigned)-EFAULT;
+			break;
+		}
+		rv = vfs_namei(path, &vp);
+		if (rv < 0) {
+			r->eax = (unsigned)rv;
+			break;
+		}
+		if (vp->type != VDIR) {
+			vn_put(vp);
+			r->eax = (unsigned)-ENOTDIR;
+			break;
+		}
+		vn_put(vp);
+		bcopy(path, cur->p_cwd, sizeof(cur->p_cwd));
 		r->eax = 0;
 		break;
-	default:
-		r->eax = (unsigned)-ENOSYS;
+	}
+	case 326: {			/* getcwd(buf, len) */
+		unsigned buf = r->ebx, len = r->ecx;
+		unsigned n = strlen(cur->p_cwd) + 1;
+
+		if (len < n) {
+			r->eax = (unsigned)-ERANGE;
+			break;
+		}
+		if (!user_ok(buf, n)) {
+			r->eax = (unsigned)-EFAULT;
+			break;
+		}
+		bcopy(cur->p_cwd, (void *)buf, n);
+		r->eax = buf;
 		break;
+	}
 	}
 
 	/* S10.2: deliver one pending signal on the way back to user mode */

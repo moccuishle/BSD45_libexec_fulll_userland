@@ -48,6 +48,8 @@ void	vfs_init(void);
 int	vfs_namei(const char *path, struct vnode **vpp);
 int	vfs_lookup_parent(const char *path, struct vnode **dvp, char *name);
 int	vfs_create(const char *path, int isdir, struct vnode **vpp);
+int	vfs_absolutize(const char *cwd, const char *in, char *out,
+	    unsigned outlen);
 int	vfs_rename(const char *oldpath, const char *newpath);
 void	vn_put(struct vnode *vp);
 void	vfs_stats(unsigned *vtotal, unsigned *vused, unsigned *vfree,
