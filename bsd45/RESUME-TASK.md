@@ -30,7 +30,103 @@
 > 打开文件往下滚几屏即可看到 4 个子任务与验收方式。
 
 
-### 0.1 取代码
+### 0.0 一键恢复（新机器 / 新会话：只读这一节就能开工，无需人工判断）
+
+> 执行者（人或 AI）：按 0.0.1 → 0.0.5 顺序执行即可。
+> 每一步都有「预期输出」，不符合就跳 0.0.4 的失败处理。
+> 本机（开发机）Windows + MSYS2 在 `C:\msys64`，没有 i686 工具链，
+> 用的是 **ucrt64 GCC 16.2.0 的 `-m32`**。
+
+### 0.0.1 环境（Windows，全新机器）
+
+```powershell
+# 1) 装 MSYS2（已装则跳过）；装完确认两个文件存在
+curl -L -o "$env:USERPROFILE\Downloads\msys2.exe" `
+  https://mirrors.tuna.tsinghua.edu.cn/msys2/distrib/msys2-x86_64-latest.exe
+& "$env:USERPROFILE\Downloads\msys2.exe" install --root C:/msys64 --confirm-command
+Test-Path C:\msys64\usr\bin\pacman.exe
+
+# 2) 镜像 + 免签名（本机实测唯一可行路径，别去修 keyring）
+#    C:\msys64\etc\pacman.d\mirrorlist.mingw  -> https://mirrors.tuna.tsinghua.edu.cn/msys2/mingw/ucrt64/
+#    C:\msys64\etc\pacman.d\mirrorlist.msys   -> https://mirrors.tuna.tsinghua.edu.cn/msys2/msys/x86_64/
+#    C:\msys64\etc\pacman.conf                -> SigLevel = Never，只保留 [ucrt64] [msys]
+#    （i686 工具链从 repo.msys2.org 取：mirrorlist.mingw32 -> https://repo.msys2.org/mingw/i686/）
+
+# 3) 装依赖（gcc/qemu/binutils + bison/flex/xorriso/git）
+C:\msys64\usr\bin\pacman.exe -Sy --noconfirm
+C:\msys64\usr\bin\pacman.exe -S --noconfirm --needed `
+  mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-qemu bison flex xorriso git
+
+# 4) 确认 x86_64 的 gcc 能干 32 位（这项目的构建前提）
+Set-Content "$env:TEMP\t.c" 'int main(void){return 0;}'
+C:\msys64\ucrt64\bin\gcc.exe -m32 -c -o "$env:TEMP\t.o" "$env:TEMP\t.c"; "gcc -m32 exit=$LASTEXITCODE (expect 0)"
+```
+
+> 若某台机器上真有 i686 mingw（`C:\msys64\mingw32\bin\gcc.exe`），
+> `tools-find.ps1` 会优先用它，其余流程完全一样。
+
+### 0.0.2 取代码并构建（Windows）
+
+```bash
+# 所有命令都走 bash；PATH 缺 /usr/bin 会到处 command not found
+export PATH=/c/Windows/System32/WindowsPowerShell/v1.0:/usr/bin:/c/msys64/usr/bin
+cd /c/Users/Administrator/Desktop/work        # 或 clone 出来的仓库根
+
+# 首次构建会自动从 4.5BSD-jialiang.tar.gz 抽出源码树（可选，仓库已带）
+cd bsd45
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File build_all.ps1
+# 预期：最后两行
+#   ISO: ...\out\BSD45-ELF-x86.iso (4591616 字节左右), kernel at LBA 2048
+#   built ...\build\bsd45.elf
+```
+
+Linux 等价（已实测 Ubuntu 26.04）：
+
+```bash
+sudo apt install build-essential gcc-multilib libc6-dev-i386 binutils \
+                 genisoimage qemu-system-x86 bison flex python3
+cd bsd45 && bash build_all.sh
+```
+
+### 0.0.3 验收（15 套，必须全绿）
+
+```bash
+cd /c/Users/Administrator/Desktop/work/bsd45
+bash tools/all_tests.sh
+# 预期最后两行：
+#   ---- suites failed: 0
+#   ALL SUITES PASSED
+```
+
+覆盖：S3 S4 S5 S6 S7 S8 S9 S10.1 S10.2 S10.3 S10.4 S11 tools S12 **S13**。
+如果 `test_s13`/`test_ps` 报错，说明 S13 还没验收过（见 0.7 节）。
+
+### 0.0.4 失败处理（按症状查，三分钟能定位）
+
+| 症状 | 原因 | 处理 |
+|---|---|---|
+| 十几套同时 `NO VERDICT`、ISO 只有 ~2.3 MB | 残留 QEMU/VMware 占着 `out\BSD45-ELF-x86.iso`，`build_iso` 写出截断镜像 | `powershell -NoProfile -Command "Get-Process qemu-system-i386 \| Stop-Process -Force"` → `rm -f out/BSD45-ELF-x86.iso` → 重跑 `build_iso.ps1` |
+| `'powershell' is not recognized` | bash PATH 缺 WindowsPowerShell 目录 | 补 `/c/Windows/System32/WindowsPowerShell/v1.0` |
+| `grep: command not found` | bash `--norc` 没带 MSYS2 PATH | 补 `/usr/bin:/c/msys64/usr/bin` |
+| `syntax error near unexpected token` | 把带 `"` `\|` `$` 的 bash 塞进了 `bash -c '...'`（PowerShell 先解析一遍） | 落成 `.sh` 文件再执行 |
+| `gcc` 静默返回 1、无任何错误 | `-B` 指向不存在的工具链目录，找不到 `as.exe` | `tools-find.ps1` 的 `Find-CcBin` 已处理；不要写死 `-B C:/msys64/mingw32/bin/` |
+| 内核启动就 TRAP 12 / GDT 乱 | 描述符结构体没 packed（GCC16 位域布局） | 见坑 53：三个 descriptor 都要 `__attribute__((packed))` |
+
+更多细节见仓库根的 `shell.md`（PowerShell→bash 的固化写法与避坑）。
+
+### 0.0.5 恢复后第一件事 + 下一步任务
+
+1. 先确认 0.0.3 全绿（尤其 **S13 的 `test_ps`** 还没在完整 15 套里跑过）
+2. 然后按顺序做（每次只做一个，跑全 15 套 + push 再进下一个）：
+   - `/bin/uname`、`/bin/true`、`/bin/false`（各 ~10 行，最快）
+   - `/bin/ps` 增强：进程名 `comm`、`-a`/`-x` 过滤
+   - `/bin/kill` 支持 `%job` 写法（需 sh 作业表配合）
+   - 真 `fg`/`bg`：sh 监视模式 + `tcsetpgrp` + 后台读终端 `SIGTTIN`（最大项）
+   - 架构方向见 **S100**（微内核 vs 宏内核边界盘点，先文档后代码）
+3. 提交与推送规则：**当前仓库为 `BSD45_libexec_fulll_userland`；若用户给了新地址，
+   先 `git remote set-url origin <新地址>` 再 push；未给地址时按用户指令决定是否推送。**
+
+## 0.1 取代码
 
 ```bash
 git clone git@github.com:moccuishle/BSD45_rootfs_overlay.git
