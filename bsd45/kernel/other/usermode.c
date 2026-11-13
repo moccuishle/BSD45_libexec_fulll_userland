@@ -75,6 +75,7 @@ extern const unsigned int hello_elf_len, init_elf_len;
 extern int _ucodesel, _udatasel;
 extern void enter_user(unsigned pd, unsigned entry, unsigned esp);
 extern void syscall_entry(void);
+extern int IdlePTD;		/* physical address of the kernel page dir */
 extern int cngetc(void);
 extern void cnputc(int c);
 
@@ -161,6 +162,17 @@ static int		next_pid = 2;
 
 static unsigned next_pa = 0x200000;
 static unsigned page_alloc(void);
+static void *map_page(unsigned va, unsigned pa);
+static void page_free(unsigned pa);
+
+/*
+ * Physical page allocator.  New pages come from the bump pointer, but a
+ * freed page is pushed on a LIFO free list (the page itself stores the next
+ * link, reached through the scratch window), so open/close/exec loops reuse
+ * memory instead of growing the pool without bound.
+ */
+static unsigned page_free_list;
+static unsigned page_nalloc, page_nfree, page_ninuse;
 
 #define	CD_IMAGE_VA	0xFE400000	/* kernel window for a file read from CD */
 static unsigned cd_mapped;		/* bytes mapped at CD_IMAGE_VA */
@@ -197,15 +209,100 @@ vfs_page_alloc(void)
 	return (page_alloc());
 }
 
+void
+vfs_page_free(unsigned pa)
+{
+
+	page_free(pa);
+}
+
+/*
+ * Drop a kernel-window mapping (TMPFS_VA / scratch style).  The PTE lives in
+ * kernel_pmap, so clearing it and flushing the TLB is enough.
+ */
+void
+vfs_page_unmap(unsigned va)
+{
+	struct pte *pte;
+
+	pte = pmap_pte(kernel_pmap, (vm_offset_t)va);
+	if (pte != 0)
+		*(int *)pte = 0;
+	tlbflush();
+}
+
+void
+vfs_page_stats(unsigned *nalloc, unsigned *nfreed, unsigned *ninuse)
+{
+
+	*nalloc = page_nalloc;
+	*nfreed = page_nfree;
+	*ninuse = page_ninuse;
+}
+
 static unsigned
 page_alloc(void)
 {
-	unsigned pa = next_pa;
+	unsigned pa;
 
+	if (page_free_list != 0) {
+		unsigned *p = map_page(SCRATCH_PAGE, page_free_list);
+
+		pa = page_free_list;
+		page_free_list = *p;
+		page_nalloc++;
+		page_ninuse++;
+		return (pa);
+	}
+	pa = next_pa;
 	next_pa += PAGE_SIZE;
 	if (next_pa >= 0x3f000000)
 		panic("usermode: out of physical memory");
+	page_nalloc++;
+	page_ninuse++;
 	return (pa);
+}
+
+static void
+page_free(unsigned pa)
+{
+	unsigned *p;
+
+	if (pa == 0 || (pa & (PAGE_SIZE - 1)) != 0)
+		return;
+	p = map_page(SCRATCH_PAGE, pa);
+	*p = page_free_list;
+	page_free_list = pa;
+	page_nfree++;
+	if (page_ninuse > 0)
+		page_ninuse--;
+}
+
+/*
+ * Release a whole user address space: every user page, every page table and
+ * the page directory itself.  The caller must have switched CR3 away from
+ * this directory first.  Entries at/above PPDROFF are kernel mappings and
+ * are never touched.
+ */
+static void
+free_address_space(unsigned pdpa)
+{
+	unsigned *pd = map_page(SCRATCH_PD, pdpa);
+	int i, j;
+
+	for (i = 0; i < 0x3f6; i++) {
+		unsigned *pt;
+
+		if ((pd[i] & PG_V) == 0)
+			continue;
+		pt = map_page(SCRATCH_PT, pd[i] & PG_FRAME);
+		for (j = 0; j < PAGE_SIZE / 4; j++)
+			if (pt[j] & PG_V)
+				page_free(pt[j] & PG_FRAME);
+		page_free(pd[i] & PG_FRAME);
+		pd[i] = 0;
+	}
+	page_free(pdpa);
 }
 
 static void *
@@ -1049,6 +1146,20 @@ proc_exit(int code)
 			if (cur->fds[fd].used)
 				fd_close(fd);
 	}
+	/*
+	 * S10.1: give the address space back.  Switch to the kernel page
+	 * directory first - the user PD is about to be freed and we are
+	 * still running on its kernel-stack mapping (0x3f6 is shared, so the
+	 * stack itself stays valid on IdlePTD).
+	 */
+	if (cur->pd != 0) {
+		unsigned save = cur->pd;
+
+		/* CR3 wants the *physical* address (IdlePTD), not pm_pdir's VA */
+		__asm__ volatile("movl %0,%%cr3" :: "r"((unsigned)IdlePTD) : "memory");
+		free_address_space(save);
+		cur->pd = 0;
+	}
 	cur->exitcode = code;
 	cur->state = reaped ? P_FREE : P_ZOMBIE;
 	if (cur->ppid == 0) {
@@ -1582,7 +1693,15 @@ syscall_dispatch(struct sysregs *r)
 			break;
 		}
 		while (cur->brk_mapped < a) {
-			user_map(cur->pd, cur->brk_mapped, page_alloc());
+			unsigned pa = page_alloc();
+
+			/*
+			 * Zero it: with page recycling a heap page can come from
+			 * the free list and still hold whatever was there before
+			 * (a page table full of PTEs, another process's stack).
+			 */
+			zero_page(pa);
+			user_map(cur->pd, cur->brk_mapped, pa);
 			cur->brk_mapped += PAGE_SIZE;
 		}
 		r->eax = a;

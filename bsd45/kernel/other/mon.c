@@ -21,6 +21,7 @@
 #include <machine/pmap.h>
 
 #include "isofs.h"
+#include "vfs.h"
 
 extern vm_offset_t avail_start, avail_end, virtual_avail, virtual_end;
 extern int KPTphys;
@@ -123,6 +124,110 @@ cmd_pte(const char *arg)
 	    (*(int *)pte & PG_U) ? " U" : " K");
 }
 
+/*
+ * cmd_vstat - S10.1: vnode pool + physical page accounting.  Run it before
+ * and after a stress loop: "vnode used" must come back down and
+ * "pages alloc" must not keep growing.
+ */
+static void
+cmd_vstat(void)
+{
+	unsigned vt, vu, vf, pa, pf, pi;
+
+	vfs_stats(&vt, &vu, &vf, &pa, &pf, &pi);
+	printf("vstat: vnode total %d used %d free %d\n", vt, vu, vf);
+	printf("vstat: pages alloc %d freed %d inuse %d\n", pa, pf, pi);
+}
+
+/*
+ * cmd_vstress - S10.1 self test: run VFS-heavy loops inside the kernel and
+ * print the pool counters before/after.  If vnodes or pages leak, "used"
+ * and "inuse" keep climbing instead of returning to the baseline.
+ */
+static void
+mkpath(char *buf, const char *prefix, int n)
+{
+	char *p = buf;
+
+	while (*prefix)
+		*p++ = *prefix++;
+	if (n >= 100)
+		*p++ = '0' + (n / 100) % 10;
+	if (n >= 10)
+		*p++ = '0' + (n / 10) % 10;
+	*p++ = '0' + n % 10;
+	*p = 0;
+}
+
+static void
+show_vstat(const char *tag)
+{
+	unsigned vt, vu, vf, pa, pf, pi;
+
+	vfs_stats(&vt, &vu, &vf, &pa, &pf, &pi);
+	printf("vstat[%s]: vnode total %d used %d free %d\n", tag, vt, vu, vf);
+	printf("vstat[%s]: pages alloc %d freed %d inuse %d\n",
+	    tag, pa, pf, pi);
+}
+
+static void
+cmd_vstress(void)
+{
+	struct vnode *vp, *dv;
+	char path[32], name[48], buf[64];
+	int i, ok;
+
+	show_vstat("before");
+
+	/* 100x ISO lookup + read + vn_put */
+	ok = 0;
+	for (i = 0; i < 100; i++) {
+		if (vfs_namei("/readme.txt", &vp) == 0) {
+			if (vp->ops->read)
+				vp->ops->read(vp, 0, buf, sizeof(buf));
+			vn_put(vp);
+			ok++;
+		}
+	}
+	printf("vstress: iso read 100x ok=%d\n", ok);
+
+	/* 100x tmpfs mkdir + rmdir */
+	ok = 0;
+	for (i = 0; i < 100; i++) {
+		mkpath(path, "/tmp/s", i);
+		if (vfs_create(path, 1, &vp) == 0) {
+			vn_put(vp);
+			if (vfs_lookup_parent(path, &dv, name) == 0) {
+				if (dv->ops->rmdir && dv->ops->rmdir(dv, name) == 0)
+					ok++;
+				vn_put(dv);
+			}
+		}
+	}
+	printf("vstress: tmpfs mkdir/rmdir 100x ok=%d\n", ok);
+
+	/* 100x rewrite the same tmpfs file (truncate must free the old page) */
+	ok = 0;
+	for (i = 0; i < 100; i++) {
+		if (vfs_create("/tmp/v", 0, &vp) == 0) {
+			if (vp->ops->truncate)
+				vp->ops->truncate(vp);
+			if (vp->ops->write &&
+			    vp->ops->write(vp, 0, "x", 1) == 1)
+				ok++;
+			vn_put(vp);
+		}
+	}
+	printf("vstress: tmpfs rewrite 100x ok=%d\n", ok);
+	if (vfs_lookup_parent("/tmp/v", &dv, name) == 0) {
+		if (dv->ops->remove)
+			dv->ops->remove(dv, name);
+		vn_put(dv);
+	}
+
+	show_vstat("after");
+}
+
 static void
 cmd_map(void)
 {
@@ -163,6 +268,10 @@ void
 monitor(void)
 {
 	printf("BSD/386 monitor - type 'help' for commands\n");
+#ifdef S10_AUTOTEST
+	/* verification build only: run the S10.1 stress without a keyboard */
+	cmd_vstress();
+#endif
 
 	for (;;) {
 		printf("bsd45> ");
@@ -170,10 +279,14 @@ monitor(void)
 			continue;
 
 		if (!strcmp(line, "help"))
-			printf("help  mem  pte <addr>  map  banner  "
+			printf("help  mem  vstat  vstress  pte <addr>  map  banner  "
 			    "usermode  shell  test  cd  reboot  halt\n");
 		else if (!strcmp(line, "mem"))
 			cmd_mem();
+		else if (!strcmp(line, "vstat"))
+			cmd_vstat();
+		else if (!strcmp(line, "vstress"))
+			cmd_vstress();
 		else if (!strncmp(line, "pte", 3))
 			cmd_pte(line + 3);
 		else if (!strcmp(line, "usermode"))

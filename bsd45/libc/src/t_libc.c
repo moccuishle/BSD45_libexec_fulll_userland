@@ -99,6 +99,58 @@ main(int argc, char **argv)
 	pid = wait4(-1, &status, 0, (struct rusage *)0);
 	printf("vfork waited pid=%d code=%d\n", pid, WEXITSTATUS(status));
 
+	/*
+	 * S10.1 stress: 50x ISO open/read/close, 50x tmpfs mkdir/rmdir and
+	 * 50x "rewrite the same file" must not exhaust the vnode pool or the
+	 * physical page pool.  The monitor's vstat shows the counters.
+	 */
+	{
+		int i, bad;
+		char buf[256];
+
+		bad = 0;
+		for (i = 0; i < 50; i++) {
+			int fd = open("/readme.txt", O_RDONLY), n;
+
+			if (fd < 0) {
+				bad++;
+				continue;
+			}
+			n = read(fd, buf, sizeof(buf));
+			if (n <= 0)
+				bad++;
+			close(fd);
+		}
+		printf("s10: iso open/read/close 50x bad=%d\n", bad);
+
+		bad = 0;
+		for (i = 0; i < 50; i++) {
+			char p[32];
+
+			sprintf(p, "/tmp/d%d", i);
+			if (mkdir(p, 0755) != 0)
+				bad++;
+			else if (rmdir(p) != 0)
+				bad++;
+		}
+		printf("s10: tmpfs mkdir/rmdir 50x bad=%d\n", bad);
+
+		bad = 0;
+		for (i = 0; i < 50; i++) {
+			int fd = open("/tmp/s10", O_WRONLY | O_CREAT | O_TRUNC,
+			    0666);
+
+			if (fd < 0) {
+				bad++;
+				continue;
+			}
+			if (write(fd, "x", 1) != 1)
+				bad++;
+			close(fd);
+		}
+		printf("s10: tmpfs rewrite 50x bad=%d\n", bad);
+		unlink("/tmp/s10");
+	}
 	printf("done\n");
 	exit(0);
 }

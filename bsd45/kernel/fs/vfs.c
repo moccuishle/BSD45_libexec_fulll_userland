@@ -23,6 +23,9 @@
 #include "vfs.h"
 
 extern unsigned vfs_page_alloc(void);
+extern void vfs_page_free(unsigned pa);
+extern void vfs_page_unmap(unsigned va);
+extern void vfs_page_stats(unsigned *, unsigned *, unsigned *);
 extern void pmap_map(vm_offset_t, vm_offset_t, vm_offset_t, int);
 extern int user_ok(unsigned, unsigned);
 extern void bcopy(const void *, void *, unsigned);
@@ -43,13 +46,49 @@ struct tmpfs_node {
 	int		used;
 	int		isdir;
 	char		name[TMPFS_NAMELEN];
-	unsigned char	*data;
+	unsigned char	*data;		/* kernel window VA, 0 = no page */
+	unsigned	pa;		/* backing physical page */
 	unsigned	size;
 };
 
 static struct tmpfs_node tmpfs_nodes[TMPFS_MAXNODES];
-static int	tmpfs_mapped[TMPFS_MAXNODES];
 static int	tmpfs_inited;
+
+/*
+ * tmpfs data pages are allocated lazily on the first write and handed back
+ * by truncate/remove/rmdir, so "echo x > /tmp/f" in a loop reuses one page
+ * instead of eating the whole pool.
+ */
+static unsigned char *
+tmpfs_getdata(struct tmpfs_node *n, int create)
+{
+	int i = n - tmpfs_nodes;
+
+	if (n->data != 0)
+		return (n->data);
+	if (!create)
+		return (0);
+	n->pa = vfs_page_alloc();
+	n->data = (unsigned char *)(TMPFS_VA + i * PAGE_SIZE);
+	pmap_map((vm_offset_t)n->data, (vm_offset_t)n->pa,
+	    (vm_offset_t)n->pa + PAGE_SIZE, VM_PROT_READ | VM_PROT_WRITE);
+	bzero(n->data, TMPFS_DATASZ);
+	return (n->data);
+}
+
+static void
+tmpfs_putdata(struct tmpfs_node *n)
+{
+
+	if (n->data == 0)
+		return;
+	/* drop the kernel window mapping first, then recycle the page */
+	vfs_page_unmap((unsigned)n->data);
+	vfs_page_free(n->pa);
+	n->data = 0;
+	n->pa = 0;
+	n->size = 0;
+}
 
 struct vnodeops tmpfs_vnodeops;
 struct vnodeops iso_vnodeops;
@@ -64,6 +103,21 @@ static unsigned char iso_sec[ISO_SECTOR];
 #define	VNODES		96
 static struct vnode vnode_pool[VNODES];
 static int vnode_used[VNODES];
+static int vnode_free[VNODES];		/* LIFO of reusable slots */
+static int vnode_nfree;
+static unsigned vn_alloc_total, vn_reuse_total;
+
+static void
+vn_init(void)
+{
+	int i;
+
+	vnode_nfree = 0;
+	for (i = VNODES - 1; i >= 0; i--) {
+		vnode_used[i] = 0;
+		vnode_free[vnode_nfree++] = i;
+	}
+}
 
 static struct vnode *
 vn_alloc(void)
@@ -74,6 +128,7 @@ vn_alloc(void)
 		if (vnode_used[i])
 			continue;
 		vnode_used[i] = 1;
+		vn_alloc_total++;
 		bzero(&vnode_pool[i], sizeof(vnode_pool[i]));
 		vnode_pool[i].ref = 1;
 		vnode_pool[i].node = -1;
@@ -91,9 +146,25 @@ vn_put(struct vnode *vp)
 	if (--vp->ref <= 0) {
 		int i = vp - vnode_pool;
 
+		vp->ref = 0;
 		if (i >= 0 && i < VNODES)
 			vnode_used[i] = 0;
 	}
+}
+
+void
+vfs_stats(unsigned *vtotal, unsigned *vused, unsigned *vfree,
+    unsigned *pnalloc, unsigned *pnfree, unsigned *pninuse)
+{
+
+	int i, used = 0;
+
+	for (i = 0; i < VNODES; i++)
+		used += vnode_used[i];
+	*vtotal = VNODES;
+	*vused = used;
+	*vfree = VNODES - used;
+	vfs_page_stats(pnalloc, pnfree, pninuse);
 }
 
 /* ---------------------------------------------------------------- tmpfs */
@@ -129,21 +200,7 @@ tmpfs_create_node(const char *name, int isdir)
 		n->used = 1;
 		n->isdir = isdir;
 		bcopy(name, n->name, len + 1);
-		if (!isdir) {
-			unsigned off = i * PAGE_SIZE;
-
-			n->data = (unsigned char *)(TMPFS_VA + off);
-			if (!tmpfs_mapped[i]) {
-				unsigned pa = vfs_page_alloc();
-
-				pmap_map((vm_offset_t)n->data,
-				    (vm_offset_t)pa,
-				    (vm_offset_t)pa + PAGE_SIZE,
-				    VM_PROT_READ | VM_PROT_WRITE);
-				tmpfs_mapped[i] = 1;
-			}
-			bzero(n->data, TMPFS_DATASZ);
-		}
+		/* the data page is created on the first write */
 		return (n);
 	}
 	return (0);
@@ -196,7 +253,7 @@ tmpfs_read_op(struct vnode *vp, unsigned off, void *buf, unsigned len)
 	n = &tmpfs_nodes[vp->node];
 	if (n->isdir)
 		return (-EISDIR);
-	if (off >= n->size)
+	if (n->data == 0 || off >= n->size)
 		return (0);
 	if (len > n->size - off)
 		len = n->size - off;
@@ -218,6 +275,8 @@ tmpfs_write_op(struct vnode *vp, unsigned off, const void *buf, unsigned len)
 		return (-ENOSPC);
 	if (len > TMPFS_DATASZ - off)
 		len = TMPFS_DATASZ - off;
+	if (tmpfs_getdata(n, 1) == 0)
+		return (-ENOSPC);
 	bcopy(buf, n->data + off, len);
 	if (off + len > n->size)
 		n->size = off + len;
@@ -273,9 +332,8 @@ tmpfs_remove_op(struct vnode *dv, const char *name)
 	n = tmpfs_find(name);
 	if (n == 0 || n->isdir)
 		return (-ENOENT);
+	tmpfs_putdata(n);
 	n->used = 0;
-	n->size = 0;
-	n->data = 0;
 	return (0);
 }
 
@@ -297,7 +355,7 @@ tmpfs_truncate_op(struct vnode *vp)
 
 	if (n->isdir)
 		return (-EISDIR);
-	n->size = 0;
+	tmpfs_putdata(n);
 	return (0);
 }
 
@@ -311,6 +369,7 @@ tmpfs_rmdir_op(struct vnode *dv, const char *name)
 	n = tmpfs_find(name);
 	if (n == 0 || !n->isdir)
 		return (-ENOENT);
+	tmpfs_putdata(n);
 	n->used = 0;
 	return (0);
 }
@@ -430,13 +489,10 @@ struct vnodeops tmpfs_vnodeops = {
 void
 vfs_init(void)
 {
-	int i;
-
 	if (tmpfs_inited)
 		return;
 	tmpfs_inited = 1;
-	for (i = 0; i < TMPFS_MAXNODES; i++)
-		tmpfs_mapped[i] = 0;
+	vn_init();
 	bzero(&iso_rootv, sizeof(iso_rootv));
 	iso_rootv.ref = 1;
 	iso_rootv.type = VDIR;

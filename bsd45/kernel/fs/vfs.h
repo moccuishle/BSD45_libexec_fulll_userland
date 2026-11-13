@@ -47,5 +47,7 @@ int	vfs_namei(const char *path, struct vnode **vpp);
 int	vfs_lookup_parent(const char *path, struct vnode **dvp, char *name);
 int	vfs_create(const char *path, int isdir, struct vnode **vpp);
 void	vn_put(struct vnode *vp);
+void	vfs_stats(unsigned *vtotal, unsigned *vused, unsigned *vfree,
+	    unsigned *pnalloc, unsigned *pnfree, unsigned *pninuse);
 
 #endif

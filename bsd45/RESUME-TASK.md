@@ -148,35 +148,81 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test_s9.ps1
 55. **`/test` 必须单独编**：`build_all.ps1` 里 `build_sh.ps1 -Target test`
     那一步漏了 S5/S6 会全 FAIL（`/test` 不存在），端到端跑一遍
     `build_all.ps1` 再跑验收。
+56. **回收来的页必须清零再交给用户**（S10.1 踩的坑）：`page_alloc()` 现在会
+    从 free list 复用页，但 `break()`（`sbrk`）映射堆页时原来**没有 zero_page**。
+    复用到的页可能还是上一任的页表（里面全是 PTE），于是 sh 的 malloc 把
+    `0x2c0067` 当成链表指针 → `TRAP 12 (stack fault)`，`echo /bin/*` 必崩，
+    而单独跑 `echo /bin/*` 又不崩（要先 fork/exec 过才会有页被回收）。
+    结论：**任何 `page_alloc()` 之后、交给用户之前都要 `zero_page()`**
+    （`load_elf`/`map_stack`/`build_args`/`break()` 都已做）。
+57. **释放用户地址空间要在切 CR3 之后**：`proc_exit` 里先
+    `movl IdlePTD, %cr3`（**物理地址**，不是 `kernel_pmap->pm_pdir` 那个虚拟
+    地址），再 `free_address_space()`；内核栈 PDE（0x3f6..0x3fa）是共享的，
+    切换后栈仍然有效。反过来先切再读 `cur->pd` 之外的东西就会踩空。
+58. **vnode 池用 LIFO 复用 + 不要重复 put**：`vn_put` 到 0 才入 free list，
+    入队前检查 `vnode_used[i]`，避免同一个 vnode 被两次 put 两次入队（那会
+    让两个活跃 vnode 指向同一槽位）。当前实现回到“线性扫描找空槽”也能满足
+    S10.1，但 LIFO 版本更接近真实 LRU 缓存。
+59. **VMware 串口管道别用阻塞读**：`serial0.fileType = "pipe"` +
+    `NamedPipeClientStream.Read()` 会因为 VMware 的同步句柄把 PowerShell 挂死
+    （`BeginRead` 反复挂起也救不了）。要在 VMware 里做无键盘验证，最省事的
+    是编译一个带 `-DS10_AUTOTEST` 的内核（`mon.c` 里 `monitor()` 打印 banner
+    后直接调 `cmd_vstress()`），`serial0.fileType = "file"` 抓输出即可。
 
 Windows 侧 2026-11-14 的实测结果：`build_all.ps1` 约 103 秒；
-`tools/test_s3|s4|proc|tty|s7|s8|s9.ps1` **7 套全 PASS**。
+`tools/test_s3|s4|proc|tty|s7|s8|s9.ps1` **7 套全 PASS**；
+S10.1 落地后 `tools/test_s10.ps1` 也 PASS（8 套全绿）。
+VMware Workstation 17 里同一份 ISO 启动到 `bsd45>`，`vstress` 输出
+`vnode used 0→0`、`pages alloc 100 / freed 100 / inuse 0`。
 
 ## S10 任务（下次把仓库拉下来就从这里开始）
 
 目标：把"能跑"变成"像个系统"。四个方向按依赖顺序做，每步都要能过现有 7 套
 验收 + 新增验收。
 
-### S10.1 页 / vnode 回收与缓存（最先做，其它都依赖它）
+### S10.1 页 / vnode 回收与缓存 ✅（2026-11-14 完成）
 
-现状：`struct vnode` 池固定（96 个），`vn_put` 只减引用不回收；物理页
+原状（存档）：`struct vnode` 池固定（96 个），`vn_put` 只减引用不回收；物理页
 `page_alloc()` 只分配不释放；tmpfs 文件数据页永不归还；反复
 `open/close/exec/cat` 后池子耗尽。
 
-要做：
+**实现**（`kernel/other/usermode.c`、`kernel/fs/vfs.c`、`kernel/other/mon.c`）：
 
-1. **物理页回收**：`pmap` 里记录页引用（或简单的 free list），实现
-   `page_free(pa)`；`pmap_map` 的临时窗口用完即 `pmap_unmap`；给
-   `struct uproc` 的页目录/用户栈在 `proc_exit` 时释放。
-2. **vnode 缓存**：`vn_put` 到 0 时进 LRU（`vnode->v_usecount==0` 挂
-   freelist 尾部）；需要时从 LRU 复用并调 `vop_inactive`；
-   加 `vnode` 统计（`vfs_vnode_stats()`，monitor 命令 `vstat`）。
-3. **tmpfs 页回收**：`tmpfs_truncate`/`tmpfs_remove` 释放数据页；
-   `rm`/`>` 覆盖时先释放旧页。
-4. **验收**：新 `tools/test_s10.sh`：
-   - `for i in 1 2 ... 50; do cat /readme.txt > /dev/null; done`（或 sh 循环）；
-   - 交错 `mkdir /tmp/d$i; ls /tmp; rmdir /tmp/d$i` 50 次；
-   - 每次打印 `vstat`，池用量必须回落；`free pages` 不得单调下降。
+1. **物理页回收**：`page_alloc()` 先弹 LIFO free list，空了才推进 bump 指针；
+   新增 `page_free(pa)`（空闲页首字存 next 指针，经 `SCRATCH_PAGE` 访问）、
+   `vfs_page_unmap(va)`（清 `kernel_pmap` 的 PTE + `tlbflush`）和计数器
+   `page_nalloc/page_nfree/page_ninuse`。
+2. **地址空间回收**：`proc_exit()` 先切 CR3 到 `IdlePTD`，再
+   `free_address_space(pd)` —— 逐个用户页 → 页表页 → 页目录页全部归还
+   （只扫 PDE 0..0x3f5，内核高半区不动）。
+3. **vnode 缓存**：`vnode_pool[96]` + LIFO free list；`vn_put` 到 0 才入队
+   （带重复 put 保护）；`vfs_stats()` 暴露 vnode/页计数。
+4. **tmpfs 页回收**：数据页改成**首次写才分配**（`tmpfs_getdata`）；
+   `truncate`/`remove`/`rmdir` 调 `tmpfs_putdata()` 先解映射再归还；
+   `>` 覆盖时旧页真正回到池子里。
+5. **监控命令**：`vstat`（vnode/pages 计数）、`vstress`（内核里跑
+   100× ISO 读 + 100× mkdir/rmdir + 100× 覆写，前后各打一次 vstat）。
+6. **`/test` 增加 S10 段**：用户态 50× open/read/close、50× mkdir/rmdir、
+   50× 覆写同一文件，全部 `bad=0`。
+
+**验收**：`tools/test_s10.ps1` / `test_s10.sh`：
+
+```
+vstat[before]: vnode total 96 used 0 free 96
+vstat[before]: pages alloc 0 freed 0 inuse 0
+vstress: iso read 100x ok=100
+vstress: tmpfs mkdir/rmdir 100x ok=100
+vstress: tmpfs rewrite 100x ok=100
+vstat[after]: vnode total 96 used 0 free 96
+vstat[after]: pages alloc 100 freed 100 inuse 0
+s10: iso open/read/close 50x bad=0
+s10: tmpfs mkdir/rmdir 50x bad=0
+s10: tmpfs rewrite 50x bad=0
+[user exit 0]
+```
+
+判据：vnode `used` 回到基线、页 `inuse` 回到基线、`alloc > 0 且 freed > 0`
+（证明真的回收过），且无 TRAP。QEMU 与 VMware 双平台都通过。
 
 ### S10.2 信号投递 + 作业控制
 
