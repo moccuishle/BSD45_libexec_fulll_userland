@@ -356,6 +356,36 @@ shell: "sleep 5 &" + jobs -> [1] 2  sleep 5 ; kill -l 列出信号
 `cd /tmp; pwd` → `/tmp`；`echo vfs-rel > a; cat a` → `vfs-rel`；
 `cd /bin; ls` → `sh.elf`；无 TRAP。11 套验收全绿。
 
+### S11（下一步，未开工）`/dev/null`、`/dev/zero`、`/dev/tty`
+
+shell 脚本天天用 `> /dev/null`，先做这三个字符设备。不需要真 devfs，用特殊 fd 最省：
+
+1. `kernel/other/usermode.c` 的 fd 类型（第 109-114 行现有 `FD_FILE 0`…
+   `FD_CONSOLE 5`）后面加：
+   ```c
+   #define	FD_NULL	6
+   #define	FD_ZERO	7
+   #define	FD_TTY	8
+   ```
+2. `open()`（`case 5`，约第 1901 行）在 `vfs_namei` 之前判路径：
+   `/dev/null` / `/dev/zero` / `/dev/tty` → 找一个空 fd 槽（照 `fd_alloc_vnode()`
+   第 597 行的写法，`vp = 0`），设 `type`/`rw` 后直接返回，不走 VFS。
+3. `read()`（`case 3`，控制台分支约第 1827 行 `if (cur->fds[fd].type == FD_CONSOLE)`）：
+   `FD_NULL` → 0；`FD_ZERO` → `bzero(buf, len)` 返回 len；`FD_TTY` → 和控制台同路。
+4. `write()`（`case 4`）：`FD_NULL` / `FD_ZERO` → 直接返回 `len`（丢弃）。
+5. `fstat`：这三种返回 `0020666`（`S_IFCHR|0666`）。
+6. 验收 `tools/test_dev.ps1` / `test_dev.sh`：
+   ```
+   echo hi > /dev/null ; echo st=$?     -> st=0
+   cat /dev/null                        -> 无输出
+   cat /dev/zero | wc                   -> 行/字/字节为 0 但 read 成功
+   echo tty-ok > /dev/tty               -> 屏幕出现 tty-ok
+   ```
+   然后跑 `build/all_tests.sh`（12 套：S3…S10.4 + test_dev）。
+
+**流程约定（2026-11-14）**：完成后**先只提交、不推送**，等新的仓库地址再
+`git remote set-url origin <地址> && git push -u origin main`。
+
 ## 1. 任务目标（原始需求）
 
 在 4.4BSD-Lite2 i386 ELF 内核上实现 Solaris 式的 VFS/root 文件系统、
