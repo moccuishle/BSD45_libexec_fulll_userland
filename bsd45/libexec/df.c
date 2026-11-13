@@ -13,9 +13,12 @@ int
 main(int argc, char **argv)
 {
 	char buf[256];
-	int fd, n;
-	int ismount = (strcmp(argv[0], "mount") == 0 ||
-	    (argc > 1 && strcmp(argv[1], "-m") == 0));
+	int fd, n, ismount = 0;
+	const char *base = strrchr(argv[0], '/');
+
+	base = (base != 0) ? base + 1 : argv[0];
+	if (strcmp(base, "mount") == 0 || (argc > 1 && strcmp(argv[1], "-m") == 0))
+		ismount = 1;
 
 	fd = open("/dev/mounts", O_RDONLY);
 	if (fd < 0) {

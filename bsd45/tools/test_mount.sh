@@ -11,8 +11,9 @@ check() { local n="$1" l="$2" x; shift 2; for x in "$@"; do
 
 echo "S12 acceptance: /dev/mounts + /bin/df"
 log="$("$ws/tools/run_qemu_test.sh" -Iso "$iso" \
-  -Keys "shell|df|cat /dev/mounts|exit 0" -WaitFor "user exit" -TimeoutSec 120)"
+  -Keys "shell|df|mount|cat /dev/mounts|exit 0" -WaitFor "user exit" -TimeoutSec 120)"
 check header "$log" "Filesystem  Mounted on  Size"
+check mount  "$log" "device on mount point type"
 check iso    "$log" "iso9660 lba=24"
 check tmpfs  "$log" "tmpfs"
 check exit   "$log" "[user exit 0]"

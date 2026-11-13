@@ -15,10 +15,11 @@ function Check([string]$name, [string]$log, [string[]]$needles) {
 }
 
 Write-Host "S12 acceptance: /dev/mounts + /bin/df"
-$log = (& $runner -Iso $Iso -Keys "shell|df|cat /dev/mounts|exit 0" `
+$log = (& $runner -Iso $Iso -Keys "shell|df|mount|cat /dev/mounts|exit 0" `
     -WaitFor "user exit" -TimeoutSec 120) -join "`n"
 
 Check "df header" $log @("Filesystem  Mounted on  Size")
+Check "mount"     $log @("device on mount point type")
 Check "iso mount" $log @("iso9660 lba=24")
 Check "tmpfs"     $log @("tmpfs")
 Check "rw/ro"     $log @(" ro", " rw")
