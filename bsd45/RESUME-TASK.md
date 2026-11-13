@@ -6,7 +6,7 @@
 `include/libkern` → `include/lib`）。
 下一步：**S10**（页/vnode 回收与缓存 → 作业控制 + 信号投递 → `/bin/rm`、`/bin/cp`
 等工具 → 真正的 mount 表与 `chdir`/相对路径）。
-仓库：https://github.com/moccuishle/BSD_overlay_finished
+仓库：https://github.com/moccuishle/BSD45_rootfs_overlay
 
 本机环境（网吧 Windows，无管理员、防火墙不可关）：
 
@@ -33,8 +33,8 @@
 ### 0.1 取代码
 
 ```bash
-git clone git@github.com:moccuishle/BSD_overlay_finished.git
-cd BSD_overlay_finished
+git clone git@github.com:moccuishle/BSD45_rootfs_overlay.git
+cd BSD45_rootfs_overlay
 # 源码已合并进仓库：kernel/ 是完整 4.5BSD sys 树，libc/bsd/ 是 /bin/sh 需要的
 # 4.5BSD 用户态源码；原来的 bsd45/src/（整棵 4.4BSD 解包树）已删除。
 # 构建不依赖任何 tarball，clone 完直接 build_all.ps1 / build_all.sh。
@@ -717,7 +717,7 @@ absent 是正常的。
 
 - 每完成一个子任务：`bash tools/test_s3.sh ... test_s9.sh` 全绿 + 新增
   `test_s10*.sh`，然后 `git add -A && git commit`，推到
-  `git@github.com:moccuishle/BSD_overlay_finished.git`（main）。
+  `git@github.com:moccuishle/BSD45_rootfs_overlay.git`（main）。
 - 恢复方式：clone 仓库 → 按第 0 节构建 → 从文档开头的 S10 节开始。
 - 构建产物不进 git（`bsd45/build/`、`bsd45/out/` 已忽略）。
 - 源码全部在仓库里：`bsd45/kernel/`（4.5BSD sys 树）+ `bsd45/libc/bsd/`

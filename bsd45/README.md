@@ -1,4 +1,4 @@
-# BSD45_rootfs_shell_finished
+# BSD45_rootfs_overlay
 
 用 **MSYS2 mingw32 的 i386 GCC**（`i686-w64-mingw32-gcc 16.2.0`）编译
 **4.4BSD-Lite2 `sys/i386`** 的机器相关核心，生成 **UNIX System V ELF32
@@ -245,8 +245,8 @@ BSD 版权许可以及 UC Berkeley 的 advertising 条款；本项目新增的�
 
 ```bash
 # 防火墙可能会重置 HTTPS 大文件传输，用 SSH 更稳（本机已配置 key）
-git clone git@github.com:moccuishle/BSD45_rootfs_shell_finished.git
-cd BSD45_rootfs_shell_finished/bsd45
+git clone git@github.com:moccuishle/BSD45_rootfs_overlay.git
+cd BSD45_rootfs_overlay/bsd45
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build_all.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\verify.ps1
 ```
