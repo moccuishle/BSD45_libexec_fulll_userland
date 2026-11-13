@@ -30,40 +30,36 @@
 > 打开文件往下滚几屏即可看到 4 个子任务与验收方式。
 
 
-### 0.0 一键恢复（新机器 / 新会话：只读这一节就能开工，无需人工判断）
+### 0.0 一键恢复（新机器 / 新会话：只读这一节就能开工）
 
-> 执行者（人或 AI）：按 0.0.1 → 0.0.5 顺序执行即可。
-> 每一步都有「预期输出」，不符合就跳 0.0.4 的失败处理。
-> 本机（开发机）Windows + MSYS2 在 `C:\msys64`，没有 i686 工具链，
-> 用的是 **ucrt64 GCC 16.2.0 的 `-m32`**。
+> **分工（2026-11-14 约定）**
+> - **环境安装由用户负责**（装 MSYS2 / gcc / qemu / bison / flex / xorriso / git）。
+>   执行者**不要**自己装环境、不要跑 pacman、不要改镜像源。
+> - **执行者从 0.0.2 开始**：验证工具链 → 构建 → 15 套验收 → 按 0.0.5 继续开发。
+> - 环境确实缺东西时，只报告缺什么（贴出 0.0.1 的检查输出），由用户补装。
 
-### 0.0.1 环境（Windows，全新机器）
+### 0.0.1 环境（用户负责；执行者只做这一条检查）
 
-```powershell
-# 1) 装 MSYS2（已装则跳过）；装完确认两个文件存在
-curl -L -o "$env:USERPROFILE\Downloads\msys2.exe" `
-  https://mirrors.tuna.tsinghua.edu.cn/msys2/distrib/msys2-x86_64-latest.exe
-& "$env:USERPROFILE\Downloads\msys2.exe" install --root C:/msys64 --confirm-command
-Test-Path C:\msys64\usr\bin\pacman.exe
-
-# 2) 镜像 + 免签名（本机实测唯一可行路径，别去修 keyring）
-#    C:\msys64\etc\pacman.d\mirrorlist.mingw  -> https://mirrors.tuna.tsinghua.edu.cn/msys2/mingw/ucrt64/
-#    C:\msys64\etc\pacman.d\mirrorlist.msys   -> https://mirrors.tuna.tsinghua.edu.cn/msys2/msys/x86_64/
-#    C:\msys64\etc\pacman.conf                -> SigLevel = Never，只保留 [ucrt64] [msys]
-#    （i686 工具链从 repo.msys2.org 取：mirrorlist.mingw32 -> https://repo.msys2.org/mingw/i686/）
-
-# 3) 装依赖（gcc/qemu/binutils + bison/flex/xorriso/git）
-C:\msys64\usr\bin\pacman.exe -Sy --noconfirm
-C:\msys64\usr\bin\pacman.exe -S --noconfirm --needed `
-  mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-qemu bison flex xorriso git
-
-# 4) 确认 x86_64 的 gcc 能干 32 位（这项目的构建前提）
-Set-Content "$env:TEMP\t.c" 'int main(void){return 0;}'
-C:\msys64\ucrt64\bin\gcc.exe -m32 -c -o "$env:TEMP\t.o" "$env:TEMP\t.c"; "gcc -m32 exit=$LASTEXITCODE (expect 0)"
+```bash
+export PATH=/usr/bin:/c/msys64/usr/bin
+for t in /c/msys64/ucrt64/bin/gcc.exe /c/msys64/ucrt64/bin/ld.exe \
+         /c/msys64/ucrt64/bin/objcopy.exe /c/msys64/ucrt64/bin/qemu-system-i386.exe \
+         /c/msys64/usr/bin/git.exe /c/msys64/usr/bin/xorriso.exe; do
+	[ -x "$t" ] && echo "ok   $t" || echo "MISS $t"
+done
 ```
 
-> 若某台机器上真有 i686 mingw（`C:\msys64\mingw32\bin\gcc.exe`），
-> `tools-find.ps1` 会优先用它，其余流程完全一样。
+预期 6 行全 `ok`。有 `MISS` 就把这几行贴给用户，然后停止（不要自己安装）。
+
+构建还需要 ucrt64 gcc 支持 `-m32`（本机没有 i686 工具链，全项目走 x86_64 gcc 的
+32 位模式）。快速确认：
+
+```bash
+printf 'int main(void){return 0;}\n' > /tmp/t.c
+/c/msys64/ucrt64/bin/gcc.exe -m32 -c -o /tmp/t.o /tmp/t.c; echo "gcc -m32 exit=$? (expect 0)"
+```
+
+（安装细节与踩坑记录在仓库根的 `Ai_Coding_Unix_install_gccenv.md`，仅供参考。）
 
 ### 0.0.2 取代码并构建（Windows）
 
