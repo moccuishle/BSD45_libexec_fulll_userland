@@ -224,7 +224,46 @@ s10: tmpfs rewrite 50x bad=0
 判据：vnode `used` 回到基线、页 `inuse` 回到基线、`alloc > 0 且 freed > 0`
 （证明真的回收过），且无 TRAP。QEMU 与 VMware 双平台都通过。
 
-### S10.2 信号投递 + 作业控制
+### S10.2 信号投递 + 作业控制 ✅（2026-11-14 完成）
+
+**实现**（`kernel/other/usermode.c`、`libc/src/libc_sys.c`、`libc/src/kill.c`、`libc/src/sleep.c`）：
+
+1. **进程结构**：`p_sig`/`p_sigmask`/`p_sigignore`/`p_sigcatch`/`p_sighand[NSIG]`、
+   `p_pgrp`、`p_stopsig`、`p_termsig`、`p_cont`、`wait_options`；新增状态 `P_STOPPED`。
+2. **投递点**：`syscall_dispatch()` 返回前对 `cur` 调 `sig_deliver()`；`proc_sched()`
+   在 `resume_user()` 之前先切到目标进程的 CR3 再投递。处理函数用“用户栈上的
+   sigframe + 8 字节 trampoline（`movl $103,%eax; int $0x80; hlt`）”实现，
+   `sigreturn(103)` 校验 `SIGFRAME_MAGIC` 后恢复寄存器/栈/掩码。
+3. **系统调用**：`kill(37)`（pid>0 / 0=pgrp / -1 / <-1 pgrp）、`sigaction(46)`、
+   `sigprocmask(48)`、`sigreturn(103)`、`getpgrp(81)`、`setpgid(82)`、
+   `TIOCGPGRP/TIOCSPGRP`（控制台前台进程组）。
+4. **默认动作**：终止（`WIFSIGNALED`，`p_termsig` 记录信号）、
+   `SIGSTOP/SIGTSTP/TTIN/TTOU` 停止（`P_STOPPED` + `WUNTRACED` 上报
+   `((sig<<8)|0x7f)`）、`SIGCHLD/SIGCONT/URG/WINCH/INFO` 忽略；
+   `wait4` 支持 `WNOHANG`/`WUNTRACED` 与 `WIFSIGNALED/WIFSTOPPED`。
+5. **控制台**：`^C/^Z/^\` 分别生成 `SIGINT/SIGTSTP/SIGQUIT` 发给
+   `console_fg_pgrp`，`read` 返回 `-EINTR`（`st=130` 由此而来）。
+6. **用户态**：libc 增加 `signal/sigaction/sigprocmask/raise`；新增 `/bin/kill`
+   （`-sig`、`-l`）与 `/bin/sleep`（无时钟，忙等 `getpid()` 近似）。
+
+**验收**：`tools/test_sig.ps1` / `test_sig.sh`：
+
+```
+sig: handler ran / sig: handler count=1     <- 处理函数 + sigreturn
+sig: ignore ok                              <- SIG_IGN
+sig: blocked count=0 / unblocked count=1    <- sigprocmask
+sig: term signaled=1 sig=15                 <- 默认动作 + WIFSIGNALED
+sig: ignore-child exited=1 code=7
+shell: Ctrl-C on /bin/cat -> st=130
+shell: "sleep 5 &" + jobs -> [1] 2  sleep 5 ; kill -l 列出信号
+```
+
+**已知限制（留给 S10.2 续 / S11）**：`jobs` 能列后台任务、`/bin/kill` 能发信号，
+但 4.5BSD sh 只有 `bg/fg/jobs` 内建、**没有 kill 内建**，所以 `kill %1` 这种
+作业名写法要改成 `kill <pid>`；真正的 `fg`/`bg` 还要求 sh 进入监视模式
+（`set -m` + `tcsetpgrp` + `SIGTTIN` 停止后台读终端），协作式内核目前做不到
+后台任务读终端时的正确抢占（后台 `cat` 会和 shell 抢输入）。
+
 
 现状：没有 `kill(2)`、没有信号；`proc_sched` 是协作式；`wait4` 只有
 `WIFEXITED`。

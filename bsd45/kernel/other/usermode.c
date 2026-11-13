@@ -47,6 +47,8 @@
 #define	SCRATCH_PAGE	0xFE202000
 
 #define	NFD		16
+#define	WNOHANG		1
+#define	WUNTRACED	2
 #define	MAXARG		16
 #define	MAXENV		8
 
@@ -136,6 +138,32 @@ struct sysregs {
 #define	P_RUN		1
 #define	P_BLOCKED	2
 #define	P_ZOMBIE	3
+#define	P_STOPPED	4
+
+/*
+ * Signal numbers / defaults.  These are the 4.5BSD values; only the ones we
+ * actually deliver are listed.
+ */
+#define	NSIG		32
+#define	SIGHUP		1
+#define	SIGINT		2
+#define	SIGQUIT		3
+#define	SIGKILL		9
+#define	SIGALRM		14
+#define	SIGTERM		15
+#define	SIGSTOP		17
+#define	SIGTSTP		18
+#define	SIGCONT		19
+#define	SIGCHLD		20
+#define	SIGTTIN		21
+#define	SIGTTOU		22
+#define	SIGUSR1		30
+#define	SIGUSR2		31
+
+#define	SIG_DFL		0
+#define	SIG_IGN		1
+
+#define	SIG_TO_MASK(s)	(1u << (s))
 
 struct uproc {
 	int		state;
@@ -154,6 +182,17 @@ struct uproc {
 	unsigned	wait_status;	/* user status pointer for wait4 */
 	int		vfork_wait;	/* blocked in vfork() */
 	int		vfork_child;	/* shares the parent's address space */
+	/* S10.2: signals and process groups */
+	unsigned	p_sig;		/* pending signals */
+	unsigned	p_sigmask;	/* blocked signals */
+	unsigned	p_sigignore;	/* SIG_IGN set */
+	unsigned	p_sigcatch;	/* handler installed */
+	unsigned	p_sighand[NSIG]; /* user handler addresses */
+	int		p_pgrp;		/* process group */
+	int		p_stopsig;	/* signal that stopped us (0 = running) */
+	int		p_termsig;	/* signal that killed us (0 = exited) */
+	int		p_cont;		/* SIGCONT arrived while stopped */
+	unsigned	wait_options;	/* wait4 options while blocked */
 };
 
 static struct uproc	procs[NPROC];
@@ -171,6 +210,9 @@ static void page_free(unsigned pa);
  * link, reached through the scratch window), so open/close/exec loops reuse
  * memory instead of growing the pool without bound.
  */
+static void sig_deliver(struct uproc *, struct sysregs *);
+static int console_fg_pgrp;
+
 static unsigned page_free_list;
 static unsigned page_nalloc, page_nfree, page_ninuse;
 
@@ -1018,12 +1060,18 @@ proc_sched(void)
 
 		if (p->state == P_RUN && p != me) {
 			cur = p;
-			resume_user(p->pd, &p->regs);
+			__asm__ volatile("movl %0,%%cr3"
+			    :: "r"(p->pd) : "memory");
+			sig_deliver(p, &p->regs);
+			if (p->state == P_RUN)
+				resume_user(p->pd, &p->regs);
 		}
 	}
 	if (me->state == P_RUN) {
 		cur = me;
-		resume_user(me->pd, &me->regs);
+		sig_deliver(me, &me->regs);
+		if (me->state == P_RUN)
+			resume_user(me->pd, &me->regs);
 	}
 	printf("\n[no runnable process]\n");
 	for (;;)
@@ -1130,7 +1178,8 @@ proc_exit(int code)
 
 			__asm__ volatile("movl %0,%%cr3"
 			    :: "r"(p->pd) : "memory");
-			*(int *)p->wait_status = (code & 0xff) << 8;
+			*(int *)p->wait_status = cur->p_termsig ?
+			    (cur->p_termsig & 0x7f) : ((code & 0xff) << 8);
 			__asm__ volatile("movl %0,%%cr3"
 			    :: "r"(save) : "memory");
 		}
@@ -1170,32 +1219,238 @@ proc_exit(int code)
 	proc_sched();
 }
 
+/* ---------------------------------------------------------------- signals */
+
+static int	console_fg_pgrp = 1;
+
+struct sigframe {
+	unsigned	magic;
+	unsigned	sig;
+	unsigned	mask;
+	unsigned	eax, ebx, ecx, edx, esi, edi, ebp;
+	unsigned	ds, es;
+	unsigned	eip, cs, eflags, uesp, ss;
+};
+
+#define	SIGFRAME_MAGIC	0x53494746	/* "SIGF" */
+#define	SIGFRAME_SIZE	(sizeof(struct sigframe))
+#define	SIGTRAMP		8	/* movl $103,%eax ; int $0x80 ; hlt */
+
+/* 0 = ignore, 1 = terminate, 2 = stop */
 static int
-do_wait4(int want, unsigned statusp, struct sysregs *r)
+sig_default(int sig)
+{
+
+	switch (sig) {
+	case SIGCHLD: case SIGCONT: case 16: case 23: case 28: case 29:
+		return (0);
+	case SIGSTOP: case SIGTSTP: case SIGTTIN: case SIGTTOU:
+		return (2);
+	default:
+		return (1);
+	}
+}
+
+static void
+sig_send(struct uproc *p, int sig)
+{
+
+	if (p == 0 || p->state == P_FREE || sig <= 0 || sig >= NSIG)
+		return;
+	if (sig == SIGCONT) {
+		if (p->state == P_STOPPED) {
+			p->state = P_RUN;
+			p->p_stopsig = 0;
+			p->p_cont = 1;
+		}
+		return;
+	}
+	p->p_sig |= SIG_TO_MASK(sig);
+	/* a blocked process gets EINTR and is made runnable again */
+	if (p->state == P_BLOCKED) {
+		p->state = P_RUN;
+		p->regs.eax = (unsigned)-EINTR;
+	}
+}
+
+static void
+sig_send_pgrp(int pgrp, int sig)
+{
+	int i;
+
+	for (i = 0; i < NPROC; i++)
+		if (procs[i].state != P_FREE && procs[i].p_pgrp == pgrp)
+			sig_send(&procs[i], sig);
+}
+
+static void
+sig_send_pid(int pid, int sig)
+{
+	struct uproc *p = proc_find(pid);
+
+	if (p != 0)
+		sig_send(p, sig);
+}
+
+/* push a sigframe + trampoline on the user stack and point the frame at it */
+static int
+sig_setup(struct uproc *p, struct sysregs *r, int sig)
+{
+	static const unsigned char tramp[8] = {
+		0xb8, 0x67, 0x00, 0x00, 0x00,	/* movl $103,%eax	*/
+		0xcd, 0x80,			/* int $0x80		*/
+		0xf4				/* hlt			*/
+	};
+	struct sigframe *fp;
+	unsigned sp = r->uesp & ~3u;
+	unsigned stub;
+	int i;
+
+	sp -= SIGFRAME_SIZE;
+	if (sp < 0x08000000 || !user_ok(sp, SIGFRAME_SIZE))
+		return (-1);
+	fp = (struct sigframe *)sp;
+	fp->magic = SIGFRAME_MAGIC;
+	fp->sig = sig;
+	fp->mask = p->p_sigmask;
+	fp->eax = r->eax; fp->ebx = r->ebx; fp->ecx = r->ecx; fp->edx = r->edx;
+	fp->esi = r->esi; fp->edi = r->edi; fp->ebp = r->ebp;
+	fp->ds = r->ds; fp->es = r->es;
+	fp->eip = r->eip; fp->cs = r->cs; fp->eflags = r->eflags;
+	fp->uesp = r->uesp; fp->ss = r->ss;
+
+	sp -= SIGTRAMP;
+	stub = sp;
+	{
+		unsigned char *d = (unsigned char *)sp;
+
+		for (i = 0; i < SIGTRAMP; i++)
+			d[i] = tramp[i];
+	}
+	sp -= 4;
+	*(unsigned *)sp = (unsigned)sig;	/* handler argument */
+	sp -= 4;
+	*(unsigned *)sp = stub;			/* return address -> trampoline */
+
+	r->uesp = sp;
+	r->eip = p->p_sighand[sig];
+	r->eax = (unsigned)sig;
+	/* the handler runs with the signal blocked (no SA_NODEFER) */
+	p->p_sigmask |= SIG_TO_MASK(sig);
+	return (0);
+}
+
+static void
+sig_stop(struct uproc *p, int sig)
+{
+	struct uproc *pp;
+
+	p->state = P_STOPPED;
+	p->p_stopsig = sig;
+	pp = proc_find(p->ppid);
+	if (pp != 0 && pp->state == P_BLOCKED && pp->wait_status != 0 &&
+	    (pp->wait_options & WUNTRACED) &&
+	    (pp->wait_pid == 0 || pp->wait_pid == p->pid) &&
+	    user_ok(pp->wait_status, 4)) {
+		__asm__ volatile("movl %0,%%cr3" :: "r"(pp->pd) : "memory");
+		*(int *)pp->wait_status = ((sig & 0xff) << 8) | 0x7f;
+		__asm__ volatile("movl %0,%%cr3" :: "r"(cur->pd) : "memory");
+		pp->regs.eax = p->pid;
+		pp->state = P_RUN;
+	}
+}
+
+/*
+ * Deliver at most one signal per return to user mode.  The caller must run
+ * with the target process's page directory loaded.
+ */
+static void
+sig_deliver(struct uproc *p, struct sysregs *r)
+{
+	int sig;
+	unsigned pend;
+
+	for (;;) {
+		pend = p->p_sig & ~p->p_sigmask;
+		pend |= p->p_sig & (SIG_TO_MASK(SIGKILL) | SIG_TO_MASK(SIGSTOP));
+		if (pend == 0)
+			return;
+		for (sig = 1; sig < NSIG; sig++)
+			if (pend & SIG_TO_MASK(sig))
+				break;
+		if (sig >= NSIG)
+			return;
+		p->p_sig &= ~SIG_TO_MASK(sig);
+
+		if (sig == SIGCONT) {
+			if (p->p_stopsig != 0) {
+				p->p_stopsig = 0;
+				p->state = P_RUN;
+			}
+			continue;
+		}
+		if (p->p_sigignore & SIG_TO_MASK(sig))
+			continue;
+		if ((p->p_sigcatch & SIG_TO_MASK(sig)) && r != 0 &&
+		    sig_setup(p, r, sig) == 0)
+			return;
+		if (sig_default(sig) == 2) {
+			sig_stop(p, sig);
+			return;
+		}
+		if (sig_default(sig) == 0)
+			continue;
+		/* terminate */
+		p->p_termsig = sig;
+		if (p == cur)
+			proc_exit(sig);		/* never returns */
+		p->exitcode = sig;
+		p->state = P_ZOMBIE;
+		return;
+	}
+}
+static int
+do_wait4(int want, unsigned statusp, int options, struct sysregs *r)
 {
 	struct uproc *p;
 	int i, pid;
 
 	for (i = 0; i < NPROC; i++) {
 		p = &procs[i];
-		if (p->state != P_ZOMBIE || p->ppid != cur->pid)
+		if (p->state == P_FREE || p->ppid != cur->pid)
 			continue;
 		if (want > 0 && p->pid != want)
 			continue;
 		pid = p->pid;
-		if (statusp != 0 && user_ok(statusp, 4))
-			*(int *)statusp = (p->exitcode & 0xff) << 8;
-		p->state = P_FREE;
-		r->eax = pid;
-		return (0);
+		if (p->state == P_ZOMBIE) {
+			if (statusp != 0 && user_ok(statusp, 4))
+				*(int *)statusp = p->p_termsig ?
+				    (p->p_termsig & 0x7f) :
+				    ((p->exitcode & 0xff) << 8);
+			p->state = P_FREE;
+			r->eax = pid;
+			return (0);
+		}
+		if (p->state == P_STOPPED && (options & WUNTRACED)) {
+			if (statusp != 0 && user_ok(statusp, 4))
+				*(int *)statusp =
+				    ((p->p_stopsig & 0xff) << 8) | 0x7f;
+			r->eax = pid;
+			return (0);
+		}
 	}
 	if (proc_children(cur->pid) == 0) {
 		r->eax = (unsigned)-ECHILD;
 		return (0);
 	}
+	if (options & WNOHANG) {
+		r->eax = 0;
+		return (0);
+	}
 	cur->regs = *r;
 	cur->wait_pid = (want > 0) ? want : 0;
 	cur->wait_status = statusp;
+	cur->wait_options = options;
 	cur->state = P_BLOCKED;
 	proc_sched();
 	r->eax = 0;
@@ -1378,12 +1633,26 @@ console_read(char *buf, unsigned len)
 		}
 		if (c == 0x04)			/* ^D: EOF on an empty line */
 			break;
-		if (c == 0x03) {		/* ^C: drop the line */
+		if (c == 0x03) {		/* ^C: SIGINT to the foreground pgrp */
 			cnputc('^');
 			cnputc('C');
 			cnputc('\n');
-			i = 0;
-			continue;
+			sig_send_pgrp(console_fg_pgrp, SIGINT);
+			return (-EINTR);
+		}
+		if (c == 0x1a) {		/* ^Z: SIGTSTP */
+			cnputc('^');
+			cnputc('Z');
+			cnputc('\n');
+			sig_send_pgrp(console_fg_pgrp, SIGTSTP);
+			return (-EINTR);
+		}
+		if (c == 0x1c) {		/* ^\: SIGQUIT */
+			cnputc('^');
+			cnputc('\\');
+			cnputc('\n');
+			sig_send_pgrp(console_fg_pgrp, SIGQUIT);
+			return (-EINTR);
 		}
 		if (c < 0x20 && c != '\t')
 			continue;
@@ -1717,11 +1986,20 @@ syscall_dispatch(struct sysregs *r)
 		r->eax = 0;
 		break;
 	case 81:			/* getpgrp */
-		r->eax = 1;
+		r->eax = (unsigned)cur->p_pgrp;
 		break;
-	case 82:			/* setpgid */
+	case 82: {			/* setpgid(pid, pgid) */
+		struct uproc *p = (r->ebx == 0) ? cur :
+		    proc_find((int)r->ebx);
+
+		if (p == 0) {
+			r->eax = (unsigned)-ESRCH;
+			break;
+		}
+		p->p_pgrp = (r->ecx == 0) ? p->pid : (int)r->ecx;
 		r->eax = 0;
 		break;
+	}
 	case 33: {			/* access(path, mode) */
 		char path[128];
 		struct vnode *vp = 0;
@@ -1735,14 +2013,140 @@ syscall_dispatch(struct sysregs *r)
 			vn_put(vp);
 		break;
 	}
-	case 46: case 48: case 52: case 53:	/* signals: accept and ignore */
+	case 37: {			/* kill(pid, sig) */
+		int pid = (int)r->ebx, sig = (int)r->ecx, i, found = 0;
+
+		if (sig < 0 || sig >= NSIG) {
+			r->eax = (unsigned)-EINVAL;
+			break;
+		}
+		for (i = 0; i < NPROC; i++) {
+			struct uproc *p = &procs[i];
+			int hit;
+
+			if (p->state == P_FREE)
+				continue;
+			if (pid > 0)
+				hit = (p->pid == pid);
+			else if (pid == 0)
+				hit = (p->p_pgrp == cur->p_pgrp);
+			else if (pid == -1)
+				hit = (p->pid != 1);
+			else
+				hit = (p->p_pgrp == -pid);
+			if (hit) {
+				sig_send(p, sig);
+				found = 1;
+			}
+		}
+		r->eax = found ? 0 : (unsigned)-ESRCH;
+		break;
+	}
+	case 46: {			/* sigaction(sig, nsa, osa) */
+		struct {
+			unsigned handler, mask, flags;
+		} sa, old;
+		int sig = (int)r->ebx;
+		unsigned nsa = r->ecx, osa = r->edx;
+
+		if (sig <= 0 || sig >= NSIG) {
+			r->eax = (unsigned)-EINVAL;
+			break;
+		}
+		if (osa != 0) {
+			if (!user_ok(osa, sizeof(sa))) {
+				r->eax = (unsigned)-EFAULT;
+				break;
+			}
+			old.handler = cur->p_sighand[sig];
+			old.mask = cur->p_sigmask;
+			old.flags = 0;
+			bcopy(&old, (void *)osa, sizeof(sa));
+		}
+		if (nsa == 0) {
+			r->eax = 0;
+			break;
+		}
+		if (!user_ok(nsa, sizeof(sa))) {
+			r->eax = (unsigned)-EFAULT;
+			break;
+		}
+		bcopy((void *)nsa, &sa, sizeof(sa));
+		cur->p_sighand[sig] = sa.handler;
+		cur->p_sigcatch &= ~SIG_TO_MASK(sig);
+		cur->p_sigignore &= ~SIG_TO_MASK(sig);
+		if (sa.handler == SIG_IGN)
+			cur->p_sigignore |= SIG_TO_MASK(sig);
+		else if (sa.handler != SIG_DFL)
+			cur->p_sigcatch |= SIG_TO_MASK(sig);
 		r->eax = 0;
 		break;
-	case 37:			/* kill(pid, sig) */
-		if (r->ecx == 0)
-			r->eax = proc_find((int)r->ebx) ? 0 : (unsigned)-ESRCH;
+	}
+	case 48: {			/* sigprocmask(how, set, oset) */
+		unsigned how = r->ebx, set = r->ecx, oset = r->edx;
+		unsigned m = 0, old = cur->p_sigmask;
+
+		if (set != 0) {
+			if (!user_ok(set, 4)) {
+				r->eax = (unsigned)-EFAULT;
+				break;
+			}
+			m = *(unsigned *)set;
+		}
+		if (oset != 0) {
+			if (!user_ok(oset, 4)) {
+				r->eax = (unsigned)-EFAULT;
+				break;
+			}
+			*(unsigned *)oset = old;
+		}
+		if (set != 0) {
+			if (how == 1)
+				cur->p_sigmask |= m;
+			else if (how == 2)
+				cur->p_sigmask &= ~m;
+			else if (how == 3)
+				cur->p_sigmask = m &
+				    ~(SIG_TO_MASK(SIGKILL) |
+				      SIG_TO_MASK(SIGSTOP));
+			else {
+				r->eax = (unsigned)-EINVAL;
+				break;
+			}
+		}
+		r->eax = 0;
+		break;
+	}
+	case 103: {			/* sigreturn: restore the saved context */
+		struct sigframe *fp = 0;
+		unsigned a, i;
+
+		a = (r->uesp + 4 + SIGTRAMP) & ~3u;
+		if (user_ok(a, SIGFRAME_SIZE) &&
+		    ((struct sigframe *)a)->magic == SIGFRAME_MAGIC)
+			fp = (struct sigframe *)a;
 		else
-			r->eax = 0;
+			for (i = r->uesp & ~3u; i < r->uesp + 320; i += 4)
+				if (user_ok(i, SIGFRAME_SIZE) &&
+				    ((struct sigframe *)i)->magic ==
+				    SIGFRAME_MAGIC) {
+					fp = (struct sigframe *)i;
+					break;
+				}
+		if (fp == 0) {
+			r->eax = (unsigned)-EINVAL;
+			break;
+		}
+		r->eax = fp->eax; r->ebx = fp->ebx; r->ecx = fp->ecx;
+		r->edx = fp->edx; r->esi = fp->esi; r->edi = fp->edi;
+		r->ebp = fp->ebp; r->ds = fp->ds; r->es = fp->es;
+		r->eip = fp->eip; r->cs = fp->cs; r->eflags = fp->eflags;
+		r->uesp = fp->uesp; r->ss = fp->ss;
+		cur->p_sigmask = fp->mask;
+		break;
+	}
+	case 52:			/* sigpending */
+		r->eax = 0;
 		break;
 	case 54: {			/* ioctl(fd, request, arg) */
 		unsigned fd = r->ebx;
@@ -1781,10 +2185,15 @@ syscall_dispatch(struct sysregs *r)
 				r->eax = (unsigned)-EFAULT;
 				break;
 			}
-			*(int *)arg = 1;
+			*(int *)arg = console_fg_pgrp;
 			r->eax = 0;
 			break;
 		case TIOCSPGRP:
+			if (!user_ok(arg, 4)) {
+				r->eax = (unsigned)-EFAULT;
+				break;
+			}
+			console_fg_pgrp = *(int *)arg;
 			r->eax = 0;
 			break;
 		default:
@@ -2026,7 +2435,7 @@ syscall_dispatch(struct sysregs *r)
 		r->eax = NFD;
 		break;
 	case 7:				/* wait4(pid, status, options, rusage) */
-		do_wait4((int)r->ebx, r->ecx, r);
+		do_wait4((int)r->ebx, r->ecx, (int)r->edx, r);
 		break;
 	case 2:				/* fork */
 		r->eax = (unsigned)do_fork(r);
@@ -2224,6 +2633,10 @@ syscall_dispatch(struct sysregs *r)
 		r->eax = (unsigned)-ENOSYS;
 		break;
 	}
+
+	/* S10.2: deliver one pending signal on the way back to user mode */
+	if (cur != 0)
+		sig_deliver(cur, r);
 }
 
 void

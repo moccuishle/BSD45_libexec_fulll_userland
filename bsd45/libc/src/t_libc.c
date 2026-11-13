@@ -10,9 +10,20 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <signal.h>
 
 static char *vav[3] = { "echo", "vfork-exec-ok", 0 };
 static char *venv[2] = { "PATH=/bin", 0 };
+
+static volatile int sig_got;
+
+static void
+on_usr1(int s)
+{
+
+	sig_got++;
+	write(1, "sig: handler ran\n", 17);
+}
 
 static void
 say(const char *s, int n)
@@ -99,6 +110,54 @@ main(int argc, char **argv)
 	pid = wait4(-1, &status, 0, (struct rusage *)0);
 	printf("vfork waited pid=%d code=%d\n", pid, WEXITSTATUS(status));
 
+	/* ---------------- S10.2: signals ---------------- */
+	{
+		unsigned set;
+		int st;
+		pid_t kid;
+
+		signal(SIGUSR1, on_usr1);
+		sig_got = 0;
+		kill(getpid(), SIGUSR1);
+		printf("sig: handler count=%d\n", sig_got);
+
+		signal(SIGUSR2, SIG_IGN);
+		kill(getpid(), SIGUSR2);
+		printf("sig: ignore ok\n");
+
+		set = 1u << SIGUSR1;
+		sig_got = 0;
+		sigprocmask(SIG_BLOCK, (sigset_t *)&set, 0);
+		kill(getpid(), SIGUSR1);
+		printf("sig: blocked count=%d\n", sig_got);
+		sigprocmask(SIG_UNBLOCK, (sigset_t *)&set, 0);
+		printf("sig: unblocked count=%d\n", sig_got);
+
+		/* default action: SIGTERM must kill the child */
+		kid = fork();
+		if (kid == 0) {
+			for (;;)
+				getpid();
+			_exit(0);
+		}
+		kill(kid, SIGTERM);
+		st = 0;
+		wait4(kid, &st, 0, (struct rusage *)0);
+		printf("sig: term signaled=%d sig=%d\n",
+		    WIFSIGNALED(st), WIFSIGNALED(st) ? WTERMSIG(st) : -1);
+
+		/* an ignoring child survives SIGTERM and exits normally */
+		kid = fork();
+		if (kid == 0) {
+			signal(SIGTERM, SIG_IGN);
+			kill(getpid(), SIGTERM);
+			_exit(7);
+		}
+		st = 0;
+		wait4(kid, &st, 0, (struct rusage *)0);
+		printf("sig: ignore-child exited=%d code=%d\n",
+		    WIFEXITED(st), WIFEXITED(st) ? WEXITSTATUS(st) : -1);
+	}
 	/*
 	 * S10.1 stress: 50x ISO open/read/close, 50x tmpfs mkdir/rmdir and
 	 * 50x "rewrite the same file" must not exhaust the vnode pool or the

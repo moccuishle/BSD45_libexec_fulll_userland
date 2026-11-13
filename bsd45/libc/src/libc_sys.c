@@ -386,12 +386,15 @@ kill(pid_t pid, int sig)
 
 	return (syscall_rv(sys3(SYS_kill, pid, sig, 0)));
 }
-
+/*
+ * S10.2: signals.  The kernel takes the 4.5BSD struct sigaction layout
+ * (handler, mask, flags) so the pointer can be passed straight through.
+ */
 int
-sigaction(int sig, const struct sigaction *act, struct sigaction *oact)
+sigaction(int signum, const struct sigaction *nsa, struct sigaction *osa)
 {
 
-	return (syscall_rv(sys3(SYS_sigaction, sig, (int)act, (int)oact)));
+	return (syscall_rv(sys3(SYS_sigaction, signum, (int)nsa, (int)osa)));
 }
 
 int
@@ -400,6 +403,27 @@ sigprocmask(int how, const sigset_t *set, sigset_t *oset)
 
 	return (syscall_rv(sys3(SYS_sigprocmask, how, (int)set, (int)oset)));
 }
+
+sig_t
+signal(int signum, sig_t handler)
+{
+	struct sigaction sa, osa;
+
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = handler;
+	sa.sa_flags = 0;
+	if (sigaction(signum, &sa, &osa) < 0)
+		return ((sig_t)-1);
+	return (osa.sa_handler);
+}
+
+int
+raise(int sig)
+{
+
+	return (kill(getpid(), sig));
+}
+
 
 int
 sigpending(sigset_t *set)
@@ -687,12 +711,6 @@ isinf(double d)
 	return (0);
 }
 
-void
-(*signal(int sig, void (*func)(int)))(int)
-{
-
-	return (NULL);
-}
 
 int
 killpg(int pgrp, int sig)
@@ -808,7 +826,11 @@ getpwuid(uid_t uid)
 unsigned int
 sleep(unsigned int secs)
 {
+	unsigned int i, n = secs * 400000u;
 
+	/* no clock syscall yet: burn getpid() calls (~1-2us each) */
+	for (i = 0; i < n; i++)
+		getpid();
 	return (0);
 }
 
