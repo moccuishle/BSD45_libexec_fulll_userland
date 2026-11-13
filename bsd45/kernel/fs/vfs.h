@@ -29,6 +29,8 @@ struct vnodeops {
 	int	(*mkdir)(struct vnode *dv, const char *name);
 	int	(*rmdir)(struct vnode *dv, const char *name);
 	int	(*truncate)(struct vnode *vp);
+	int	(*rename)(struct vnode *dv, const char *old,
+		    const char *new);
 };
 
 struct vnode {
@@ -46,6 +48,7 @@ void	vfs_init(void);
 int	vfs_namei(const char *path, struct vnode **vpp);
 int	vfs_lookup_parent(const char *path, struct vnode **dvp, char *name);
 int	vfs_create(const char *path, int isdir, struct vnode **vpp);
+int	vfs_rename(const char *oldpath, const char *newpath);
 void	vn_put(struct vnode *vp);
 void	vfs_stats(unsigned *vtotal, unsigned *vused, unsigned *vfree,
 	    unsigned *pnalloc, unsigned *pnfree, unsigned *pninuse);

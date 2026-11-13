@@ -172,14 +172,14 @@ bsd45/
     fs/                     ufs/miscfs/isofs/nfs + 自有的 vfs.c、isofs.c
     vm/                     Mach VM（pmap 源）
     libkern/                内核库例程（bcmp/strcmp/strlen/quad 等）
-    libexec/                内核辅助程序（预留）
+    libexec/                带 main() 的程序源码：host 工具（genassym/mknodes）与用户态工具（ls/cat/echo/mkdir/kill/sleep/t_libc）
     driver/                 dev + 自有的 atapi.c、pccon.c
     net/                    net/netinet/netiso/netccitt/netns
     other/                  kern、conf、libkern、tests + 自有的 glue.c/mon.c/
                             usermode.c/stubs.c/strings.c
   libc/                     用户态 C 库与工具
     include/                stdarg.h、ctype.h、histedit.h（用户态头文件）
-    src/                    crt0.s、libc_sys.c、dtoa.c … 与 hello/init/sh/ls/
+    src/                   只有 libc 依赖实现：crt0.s、jmp.s、chkstk_ms.s、libc_sys.c、
                             cat/mkdir/echo/t_libc 等程序
     bsd/                    4.5BSD 用户态源码（bin/sh、lib/libc 子集、
                             usr.bin/printf 与 include/sys 头文件）

@@ -251,7 +251,7 @@ if ($Target -eq "sh") {
     }
 } else {
     Write-Step "compiling libc test program"
-    if (Compile-C (Join-Path $ws "libc\src\t_libc.c") "$obj\t_libc.o") { $objs += "$obj\t_libc.o" }
+    if (Compile-C (Join-Path $ws "libexec\t_libc.c") "$obj\t_libc.o") { $objs += "$obj\t_libc.o" }
 }
 
 if ($fail) { Write-Host "$fail file(s) failed" -ForegroundColor Red; exit 1 }
@@ -276,9 +276,9 @@ Write-Host ("built {0} ({1:N0} bytes)" -f $elf, (Get-Item $elf).Length)
 
 if ($Target -eq "sh") {
     # /bin/echo, /bin/ls: small tools linked against the same libc.
-    foreach ($tool in @("echo", "ls", "cat", "mkdir", "kill", "sleep")) {
+    foreach ($tool in @("echo", "ls", "cat", "mkdir", "kill", "sleep", "rm", "cp", "mv", "wc", "grep")) {
         $tobj = "$obj\$tool.o"
-        if (Compile-C (Join-Path $ws "libc\src\$tool.c") $tobj) {
+        if (Compile-C (Join-Path $ws "libexec\$tool.c") $tobj) {
             $tobjs = @($libobjs) + @($tobj)
             & $LD -m i386pe -Ttext 0x08048000 -e _start --subsystem console -o "$bld\$tool.pe" @tobjs $libgcc 2>&1 | Select-Object -First 20
             if ($LASTEXITCODE -eq 0) {

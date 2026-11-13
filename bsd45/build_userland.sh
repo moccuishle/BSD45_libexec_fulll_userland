@@ -22,7 +22,7 @@ build_user_elf() {
 }
 
 echo "building userland ELF32"
-build_user_elf "$ws/libc/src/hello.c" hello
-build_user_elf "$ws/libc/src/init.c"  init
-build_user_elf "$ws/libc/src/sh.c"    sh
+build_user_elf "$ws/libexec/hello.c" hello
+build_user_elf "$ws/libexec/init.c"  init
+build_user_elf "$ws/libexec/sh.c"    sh
 echo "done -> $out"

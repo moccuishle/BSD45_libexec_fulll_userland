@@ -1,4 +1,4 @@
-# config.mk - kernel/libexec
+# config.mk - libexec (host tools + userland program sources)
 #
 # Per-directory build configuration for the BSD45 kernel.
 # build_kernel.ps1 is the current driver; a kbuild-style build can

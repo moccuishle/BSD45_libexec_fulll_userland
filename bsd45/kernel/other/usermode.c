@@ -2581,14 +2581,36 @@ syscall_dispatch(struct sysregs *r)
 			break;
 		}
 		rv = vfs_lookup_parent(path, &dv, name);
-		if (rv < 0 || dv->ops->remove == 0) {
-			r->eax = (unsigned)-ENOENT;
+		if (rv < 0) {
+			r->eax = (unsigned)rv;
+			break;
+		}
+		if (dv->ops->remove == 0) {
+			vn_put(dv);
+			r->eax = (unsigned)-EROFS;
 			break;
 		}
 		r->eax = (unsigned)dv->ops->remove(dv, name);
 		vn_put(dv);
 		break;
 	}
+	case 128: {			/* rename(old, new) */
+		char oldp[128], newp[128];
+
+		if (user_str(r->ebx, oldp, sizeof(oldp)) < 0 ||
+		    user_str(r->ecx, newp, sizeof(newp)) < 0) {
+			r->eax = (unsigned)-EFAULT;
+			break;
+		}
+		r->eax = (unsigned)vfs_rename(oldp, newp);
+		break;
+	}
+	case 9:				/* link: no hard links yet */
+		r->eax = (unsigned)-EROFS;
+		break;
+	case 15:			/* chmod: modes are fixed for now */
+		r->eax = 0;
+		break;
 	case 136: {			/* mkdir(path, mode) */
 		char path[128];
 		struct vnode *vp = 0;

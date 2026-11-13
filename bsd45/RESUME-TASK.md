@@ -175,6 +175,15 @@ S10.1 落地后 `tools/test_s10.ps1` 也 PASS（8 套全绿）。
 VMware Workstation 17 里同一份 ISO 启动到 `bsd45>`，`vstress` 输出
 `vnode used 0→0`、`pages alloc 100 / freed 100 / inuse 0`。
 
+## 开发约定（2026-11-14 起）
+
+- **`bsd45/libexec/`**：所有用户态程序源码（带 `main()` 的工具：`ls/cat/echo/mkdir/rm/cp/mv/wc/grep/kill/sleep`，
+  以及 `hello.c`/`init.c`/`sh.c`/`t_libc.c` 这类独立程序）。
+- **`bsd45/libc/src/`**：只放 libc 依赖实现（`libc_sys.c`、`dtoa.c`、`ctype_table.c`、
+  `errlst.c`、`quad32.c`、`histedit_stub.c`、`crt0.s`、`jmp.s`、`chkstk_ms.s`）和
+  `hostgen/`（构建期 host 工具：`mknodes.c`/`hostshim.h`/`hoststub.c`）。
+- 新增工具时：源码放 `libexec/`，在 `build_sh.ps1`/`build_sh.sh` 的工具列表里加名字，
+  并在 `build_iso.ps1`/`build_iso.sh` 里把产物拷成 `BIN/<NAME>.ELF`。
 ## S10 任务（下次把仓库拉下来就从这里开始）
 
 目标：把"能跑"变成"像个系统"。四个方向按依赖顺序做，每步都要能过现有 7 套
@@ -226,7 +235,7 @@ s10: tmpfs rewrite 50x bad=0
 
 ### S10.2 信号投递 + 作业控制 ✅（2026-11-14 完成）
 
-**实现**（`kernel/other/usermode.c`、`libc/src/libc_sys.c`、`libc/src/kill.c`、`libc/src/sleep.c`）：
+**实现**（`kernel/other/usermode.c`、`libc/src/libc_sys.c`、`libexec/kill.c`、`libexec/sleep.c`）：
 
 1. **进程结构**：`p_sig`/`p_sigmask`/`p_sigignore`/`p_sigcatch`/`p_sighand[NSIG]`、
    `p_pgrp`、`p_stopsig`、`p_termsig`、`p_cont`、`wait_options`；新增状态 `P_STOPPED`。

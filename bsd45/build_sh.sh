@@ -217,7 +217,7 @@ if [ "$target" = "sh" ]; then
     fi
 else
     step "compiling libc test program"
-    compile_c "$ws/libc/src/t_libc.c" "$obj/t_libc.o" && add "$obj/t_libc.o"
+    compile_c "$ws/libexec/t_libc.c" "$obj/t_libc.o" && add "$obj/t_libc.o"
 fi
 
 if [ "$fail" -ne 0 ]; then echo "$fail file(s) failed" >&2; exit 1; fi
@@ -231,9 +231,9 @@ ld -m elf_i386 -Ttext 0x08048000 -e _start -o "$elf" "${objs[@]}" "$libgcc" || {
 echo "built $elf ($(stat -c%s "$elf" 2>/dev/null || wc -c < "$elf") bytes)"
 
 if [ "$target" = "sh" ]; then
-    for tool in echo ls cat mkdir; do
+    for tool in echo ls cat mkdir kill sleep rm cp mv wc grep; do
         tobj="$obj/$tool.o"
-        if compile_c "$ws/libc/src/$tool.c" "$tobj"; then
+        if compile_c "$ws/libexec/$tool.c" "$tobj"; then
             ld -m elf_i386 -Ttext 0x08048000 -e _start -o "$outd/$tool.elf" \
                 "${libobjs[@]}" "$tobj" "$libgcc" && \
                 echo "built $outd/$tool.elf ($(stat -c%s "$outd/$tool.elf" 2>/dev/null || wc -c < "$outd/$tool.elf") bytes)"

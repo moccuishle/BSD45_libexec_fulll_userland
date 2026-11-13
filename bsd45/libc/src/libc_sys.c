@@ -46,6 +46,7 @@
 #define	SYS_geteuid	25
 #define	SYS_access	33
 #define	SYS_kill	37
+#define	SYS_rename	128
 #define	SYS_getppid	39
 #define	SYS_dup		41
 #define	SYS_pipe	42
@@ -390,6 +391,13 @@ kill(pid_t pid, int sig)
  * S10.2: signals.  The kernel takes the 4.5BSD struct sigaction layout
  * (handler, mask, flags) so the pointer can be passed straight through.
  */
+int
+rename(const char *from, const char *to)
+{
+
+	return (syscall_rv(sys3(SYS_rename, (int)from, (int)to, 0)));
+}
+
 int
 sigaction(int signum, const struct sigaction *nsa, struct sigaction *osa)
 {

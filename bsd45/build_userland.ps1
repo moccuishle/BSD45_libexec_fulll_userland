@@ -1,4 +1,4 @@
-﻿# build_userland.ps1 - build static i386 ELF user programs for BSD45-ELF-x86
+# build_userland.ps1 - build static i386 ELF user programs for BSD45-ELF-x86
 #
 # The mingw toolchain cannot emit ELF directly, so: COFF object ->
 # PE (image base 0x08048000) -> objcopy -O elf32-i386.  The kernel's
@@ -40,9 +40,9 @@ function Build-UserElf([string]$src, [string]$name) {
 }
 
 Write-Host "building userland ELF32"
-Build-UserElf (Join-Path $ws "libc\src\hello.c") "hello" | Out-Null
-Build-UserElf (Join-Path $ws "libc\src\init.c")  "init"  | Out-Null
-Build-UserElf (Join-Path $ws "libc\src\sh.c")    "sh"    | Out-Null
+Build-UserElf (Join-Path $ws "libexec\hello.c") "hello" | Out-Null
+Build-UserElf (Join-Path $ws "libexec\init.c")  "init"  | Out-Null
+Build-UserElf (Join-Path $ws "libexec\sh.c")    "sh"    | Out-Null
 Write-Host "done -> $OutDir"
 
 

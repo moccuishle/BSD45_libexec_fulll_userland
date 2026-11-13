@@ -374,6 +374,26 @@ tmpfs_rmdir_op(struct vnode *dv, const char *name)
 	return (0);
 }
 
+static int
+tmpfs_rename_op(struct vnode *dv, const char *old, const char *new)
+{
+	struct tmpfs_node *n;
+	int len;
+
+	if (dv != &tmp_root)
+		return (-EROFS);
+	n = tmpfs_find(old);
+	if (n == 0)
+		return (-ENOENT);
+	if (tmpfs_find(new) != 0)
+		return (-EEXIST);
+	len = strlen(new);
+	if (len == 0 || len >= TMPFS_NAMELEN)
+		return (-ENAMETOOLONG);
+	bzero(n->name, TMPFS_NAMELEN);
+	bcopy(new, n->name, len + 1);
+	return (0);
+}
 /* ---------------------------------------------------------------- ISO9660 */
 
 static int
@@ -481,7 +501,8 @@ struct vnodeops iso_vnodeops = {
 struct vnodeops tmpfs_vnodeops = {
 	tmpfs_lookup_op, tmpfs_getattr_op, tmpfs_read_op, tmpfs_write_op,
 	tmpfs_readdir_op, tmpfs_create_op, tmpfs_remove_op,
-	tmpfs_mkdir_op, tmpfs_rmdir_op, tmpfs_truncate_op
+	tmpfs_mkdir_op, tmpfs_rmdir_op, tmpfs_truncate_op,
+	tmpfs_rename_op
 };
 
 /* ---------------------------------------------------------------- namei */
@@ -577,10 +598,16 @@ vfs_lookup_parent(const char *path, struct vnode **dvp, char *name)
 	if (slash == 0)
 		return (-ENOENT);
 	n = slash - path;
-	if (n <= 0 || n >= (int)sizeof(dir))
+	if (n >= (int)sizeof(dir) - 1)
 		return (-ENOENT);
-	bcopy(path, dir, n);
-	dir[n] = 0;
+	if (n == 0) {
+		/* "/name": the parent is the root directory */
+		dir[0] = '/';
+		dir[1] = 0;
+	} else {
+		bcopy(path, dir, n);
+		dir[n] = 0;
+	}
 	n = strlen(slash + 1);
 	if (n == 0 || n >= 48)
 		return (-ENOENT);
@@ -611,5 +638,33 @@ vfs_create(const char *path, int isdir, struct vnode **vpp)
 		    -EROFS;
 	}
 	vn_put(dv);
+	return (rv);
+}
+
+/*
+ * Rename within one directory.  The ISO9660 root is read-only, so only
+ * the tmpfs mount can do this; mv(1) falls back to cp+unlink otherwise.
+ */
+int
+vfs_rename(const char *oldpath, const char *newpath)
+{
+	struct vnode *odv, *ndv;
+	char oname[48], nname[48];
+	int rv;
+
+	rv = vfs_lookup_parent(oldpath, &odv, oname);
+	if (rv < 0)
+		return (rv);
+	rv = vfs_lookup_parent(newpath, &ndv, nname);
+	if (rv < 0) {
+		vn_put(odv);
+		return (rv);
+	}
+	if (odv != ndv || odv->ops->rename == 0)
+		rv = -EXDEV;
+	else
+		rv = odv->ops->rename(odv, oname, nname);
+	vn_put(odv);
+	vn_put(ndv);
 	return (rv);
 }

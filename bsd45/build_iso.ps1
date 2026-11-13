@@ -84,6 +84,16 @@ $kill = Join-Path $ws "out\userland\kill.elf"
 if (Test-Path $kill)  { Copy-Item $kill  "$isodir\bin\KILL.ELF"  -Force }
 $sleep = Join-Path $ws "out\userland\sleep.elf"
 if (Test-Path $sleep) { Copy-Item $sleep "$isodir\bin\SLEEP.ELF" -Force }
+$rmb = Join-Path $ws "out\userland\rm.elf"
+if (Test-Path $rmb)   { Copy-Item $rmb   "$isodir\bin\RM.ELF"    -Force }
+$cpb = Join-Path $ws "out\userland\cp.elf"
+if (Test-Path $cpb)   { Copy-Item $cpb   "$isodir\bin\CP.ELF"    -Force }
+$mvb = Join-Path $ws "out\userland\mv.elf"
+if (Test-Path $mvb)   { Copy-Item $mvb   "$isodir\bin\MV.ELF"    -Force }
+$wcb = Join-Path $ws "out\userland\wc.elf"
+if (Test-Path $wcb)   { Copy-Item $wcb   "$isodir\bin\WC.ELF"    -Force }
+$grepb = Join-Path $ws "out\userland\grep.elf"
+if (Test-Path $grepb) { Copy-Item $grepb "$isodir\bin\GREP.ELF"  -Force }
 Copy-Item "$bld\boot.img" "$isodir\boot.img" -Force
 # rootfs_overlay/ is copied on top of the ISO root: /etc/profile,
 # /README.TXT and the empty bin/sbin/tmp skeleton.
