@@ -421,6 +421,82 @@ shell 脚本天天用 `> /dev/null`，先做这三个字符设备。不需要真
 **约定**：完成后 commit + push，仓库地址用用户当次给的（当前是
 `BSD45_libexec_fulll_userland`，新地址以用户消息为准）。
 
+## 0.7 暂停点与恢复指令（2026-11-14 07:20，重要，先读这节）
+
+### 当前状态（暂停时）
+
+| 项 | 值 |
+|---|---|
+| 仓库 | https://github.com/moccuishle/BSD45_libexec_fulll_userland |
+| 已推送 | `b51b334`（S12b：`/dev/mounts` + `df` + `mount`），14 套验收全绿 |
+| 工作区 | **有未提交改动**：S13（`/dev/ps` + `/bin/ps`）已实现并手工验证通过，但 15 套验收跑到一半被中断 |
+| 未提交文件 | `kernel/other/usermode.c`、`build_sh.ps1`、`build_sh.sh`、`build_iso.ps1`、`libexec/ps.c`、`tools/test_ps.ps1`、`tools/test_ps.sh` |
+| 未跟踪（本地辅助，已被 .gitignore 忽略） | `build/*.sh`、`build/*.py`（bash 驱动脚本） |
+
+S13 手工验证结果（直接跑 QEMU 得到的）：
+
+```
+# ps
+PID PPID PGRP STAT
+1 0 1 BLOCK
+2 1 2 RUN
+```
+
+### 恢复后按顺序做这几步
+
+```bash
+# 0) 所有命令都走 bash（见 work/shell.md）
+export PATH=/c/Windows/System32/WindowsPowerShell/v1.0:/usr/bin:/c/msys64/usr/bin
+cd /c/Users/Administrator/Desktop/work/bsd45
+
+# 1) 先杀掉残留 QEMU！否则它占着 out/BSD45-ELF-x86.iso，
+#    build_iso 会生成截断 ISO（2.3MB），所有启动测试全 "NO VERDICT"
+powershell -NoProfile -Command \
+  "Get-Process qemu-system-i386 -ErrorAction SilentlyContinue | Stop-Process -Force"
+sleep 2
+
+# 2) 重建（userland + sh + test + kernel + ISO）
+powershell -NoProfile -ExecutionPolicy Bypass -File build_all.ps1
+
+# 3) 15 套验收（S3 S4 S5 S6 S7 S8 S9 S10.1 S10.2 S10.3 S10.4 S11 tools S12 S13）
+bash tools/all_tests.sh        # 15 套，脚本已随仓库提交
+
+# 4) 全绿后提交并推送
+git add -A && git commit -m "S13: /dev/ps + /bin/ps" && git push origin main
+```
+
+`tools/all_tests.sh` 已包含全部 15 套（会先杀掉残留 QEMU 并检查 ISO 大小）。
+
+### 恢复时最容易踩的三个坑（本会话都真实发生过）
+
+1. **ISO 被占用 → 截断 → 全线 NO VERDICT**
+   `rm: Device or resource busy`（QEMU 或 VMware 挂着光驱）。现象：`build_iso` 报的
+   ISO 只有 ~2.3 MB 而不是 4,591,616 字节；11 套以上验收同时 "NO VERDICT"。
+   处理：杀 QEMU → `rm -f out/BSD45-ELF-x86.iso` → 重跑 `build_iso.ps1`。
+2. **PowerShell 吃 bash 的引号/管道**
+   带 `"` `|` `$` `()` 的 bash 逻辑**必须写成 `.sh` 文件**再执行，不要用
+   `bash -c '...'`（会报 `syntax error near unexpected token` 或把 `|` 当管道）。
+   详见 `work/shell.md`。
+3. **从 bash 给 `.ps1` 传数组**
+   `-Keys "a","b"` 会被当成一个字符串。用 `-Keys "a|b|c"`（`run_qemu_test.ps1`
+   已支持 `|` 分隔）。
+
+### 本会话已完成的里程碑（都已推送覆盖）
+
+| 阶段 | 内容 | 提交 |
+|---|---|---|
+| S10.4 | 挂载表 + `chdir`/`getcwd` + 相对路径 | `416b246` |
+| S11 | `/dev/null`、`/dev/zero`、`/dev/tty` | `d37bfa4` |
+| tools | `/bin/head`、`/bin/tail` | `01a7100` + `5b7ac0f` |
+| S12 | `/dev/mounts` 伪文件 + `/bin/df` | `474d640` |
+| S12b | `/bin/mount`（`mount.c` include `df.c`，看 `basename(argv[0])`） | `b51b334` |
+
+### 下一步候选（S13 收尾之后）
+
+1. **`/bin/uname`、`/bin/true`、`/bin/false`**（各 ~10 行，最快）
+2. **`/bin/ps` 增强**：加 `comm`（进程名）、`-a`/`-x` 过滤；再给 `kill` 支持 `%job`
+3. **真 `fg`/`bg`**：sh 监视模式 + `tcsetpgrp` + 后台读终端时 `SIGTTIN`（工作量最大）
+
 ## 1. 任务目标（原始需求）
 
 在 4.4BSD-Lite2 i386 ELF 内核上实现 Solaris 式的 VFS/root 文件系统、

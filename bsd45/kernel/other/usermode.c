@@ -115,6 +115,7 @@ static struct file ramfs[] = {
 #define	FD_NULL		6	/* /dev/null */
 #define	FD_ZERO		7	/* /dev/zero */
 #define	FD_MOUNTS	8	/* /dev/mounts */
+#define	FD_PS		9	/* /dev/ps */
 
 struct fd {
 	const unsigned char	*d;
@@ -1467,6 +1468,67 @@ do_wait4(int want, unsigned statusp, int options, struct sysregs *r)
 	return (0);
 }
 
+
+/* ---- S13: render the process table for the /dev/ps pseudo file ---- */
+
+static unsigned
+ps_str(char *buf, unsigned o, unsigned len, const char *s)
+{
+
+	while (*s && o + 1 < len)
+		buf[o++] = *s++;
+	return (o);
+}
+
+static unsigned
+ps_num(char *buf, unsigned o, unsigned len, unsigned v)
+{
+	char num[12];
+	int n = 0;
+
+	if (v == 0)
+		num[n++] = '0';
+	while (v > 0) {
+		num[n++] = '0' + (v % 10);
+		v /= 10;
+	}
+	while (n > 0 && o + 1 < len)
+		buf[o++] = num[--n];
+	return (o);
+}
+
+static int
+proc_list_text(char *buf, unsigned len)
+{
+	unsigned o = 0;
+	int i;
+
+	for (i = 0; i < NPROC; i++) {
+		const char *st;
+
+		if (procs[i].state == P_FREE)
+			continue;
+		switch (procs[i].state) {
+		case P_RUN:	st = "RUN"; break;
+		case P_BLOCKED:	st = "BLOCK"; break;
+		case P_ZOMBIE:	st = "ZOMB"; break;
+		case P_STOPPED:	st = "STOP"; break;
+		default:	st = "?"; break;
+		}
+		o = ps_num(buf, o, len, (unsigned)procs[i].pid);
+		o = ps_str(buf, o, len, " ");
+		o = ps_num(buf, o, len, (unsigned)procs[i].ppid);
+		o = ps_str(buf, o, len, " ");
+		o = ps_num(buf, o, len, (unsigned)procs[i].p_pgrp);
+		o = ps_str(buf, o, len, " ");
+		o = ps_str(buf, o, len, st);
+		o = ps_str(buf, o, len, "\n");
+	}
+	if (o < len)
+		buf[o] = 0;
+	return ((int)o);
+}
+
 /* --------------------------------------------------------------- syscalls */
 /* Absolutize a path argument once, here in the syscall layer. */
 static int
@@ -1843,6 +1905,25 @@ syscall_dispatch(struct sysregs *r)
 			r->eax = len;
 			break;
 		}
+		if (cur->fds[fd].type == FD_PS) {
+			static char pbuf[512];
+			static int plen = -1;
+			unsigned off = cur->fds[fd].off, n2;
+
+			if (plen < 0)
+				plen = proc_list_text(pbuf, sizeof(pbuf));
+			if (off >= (unsigned)plen) {
+				r->eax = 0;
+				break;
+			}
+			n2 = plen - off;
+			if (n2 > len)
+				n2 = len;
+			bcopy(pbuf + off, (char *)buf, n2);
+			cur->fds[fd].off = off + n2;
+			r->eax = n2;
+			break;
+		}
 		if (cur->fds[fd].type == FD_MOUNTS) {
 			static char mbuf[256];
 			static int mlen = -1;
@@ -1963,12 +2044,14 @@ syscall_dispatch(struct sysregs *r)
 		if (strcmp(path, "/dev/null") == 0 ||
 		    strcmp(path, "/dev/zero") == 0 ||
 		    strcmp(path, "/dev/tty") == 0 ||
-		    strcmp(path, "/dev/mounts") == 0) {
+		    strcmp(path, "/dev/mounts") == 0 ||
+		    strcmp(path, "/dev/ps") == 0) {
 			int t;
 
 			t = (strcmp(path, "/dev/null") == 0) ? FD_NULL :
 			    (strcmp(path, "/dev/zero") == 0) ? FD_ZERO :
 			    (strcmp(path, "/dev/mounts") == 0) ? FD_MOUNTS :
+			    (strcmp(path, "/dev/ps") == 0) ? FD_PS :
 			    FD_CONSOLE;
 			for (fd = 0; fd < NFD; fd++)
 				if (!cur->fds[fd].used)
