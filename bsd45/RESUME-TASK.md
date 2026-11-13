@@ -386,6 +386,41 @@ shell 脚本天天用 `> /dev/null`，先做这三个字符设备。不需要真
 **流程约定（2026-11-14）**：完成后**先只提交、不推送**，等新的仓库地址再
 `git remote set-url origin <地址> && git push -u origin main`。
 
+### S12（下一步，未开工）`/bin/df` + `mount`：把挂载表暴露给用户态
+
+复用 S11 的「特殊 fd」套路，不新增系统调用号：
+
+1. `kernel/fs/vfs.c` 加
+   ```c
+   int vfs_mount_list(char *buf, unsigned len);   /* 文本，NUL 结尾 */
+   ```
+   用现有的 mount 表逐项格式化，例如：
+   ```
+   /        iso9660  lba=24  size=2048  ro
+   /tmp     tmpfs    lba=0   size=0     rw
+   ```
+   （ISO 的 `iso_root()/iso_root_size()` 已有；tmpfs 报 0。）
+2. `kernel/other/usermode.c`：
+   - fd 类型加 `#define FD_MOUNTS 8`
+   - `open()` 的 `/dev/*` 拦截块里加 `/dev/mounts` → `FD_MOUNTS`
+   - `read()` 复用 S11 的打包方式：第一次读时调 `vfs_mount_list()` 到静态缓冲，
+     之后按 `off` 返回剩余部分，读完返回 0
+3. 工具（`libexec/`）：
+   - `df.c`：`cat /dev/mounts` 的等价物（open/read/write 循环）
+   - `mount.c`：同样读 `/dev/mounts`，只是头部打印 `device on mount-point type`
+4. `build_sh.ps1/.sh` 工具列表加 `df mount`；`build_iso.ps1` 装
+   `BIN/DF.ELF`、`BIN/MOUNT.ELF`
+5. 验收 `tools/test_mount.ps1` / `.sh`：
+   ```
+   df            -> 出现 "/" 与 "/tmp" 两行
+   mount         -> 出现 iso9660 / tmpfs
+   cat /dev/mounts | wc   -> 行数 == 2
+   ```
+   然后跑 14 套（13 + test_mount）。
+
+**约定**：完成后 commit + push，仓库地址用用户当次给的（当前是
+`BSD45_libexec_fulll_userland`，新地址以用户消息为准）。
+
 ## 1. 任务目标（原始需求）
 
 在 4.4BSD-Lite2 i386 ELF 内核上实现 Solaris 式的 VFS/root 文件系统、
