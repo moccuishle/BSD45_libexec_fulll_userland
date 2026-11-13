@@ -112,6 +112,8 @@ static struct file ramfs[] = {
 #define	FD_TMPFILE	3
 #define	FD_TMPDIR	4
 #define	FD_CONSOLE	5
+#define	FD_NULL		6	/* /dev/null */
+#define	FD_ZERO		7	/* /dev/zero */
 
 struct fd {
 	const unsigned char	*d;
@@ -1802,6 +1804,12 @@ syscall_dispatch(struct sysregs *r)
 			r->eax = n;
 			break;
 		}
+		if (cur->fds[fd].used &&
+		    (cur->fds[fd].type == FD_NULL ||
+		     cur->fds[fd].type == FD_ZERO)) {
+			r->eax = len;		/* discard */
+			break;
+		}
 		if (!cur->fds[fd].used ||
 		    cur->fds[fd].type != FD_CONSOLE) {	/* not writable */
 			r->eax = (unsigned)-EBADF;
@@ -1822,6 +1830,16 @@ syscall_dispatch(struct sysregs *r)
 		}
 		if (fd >= NFD || !cur->fds[fd].used) {
 			r->eax = (unsigned)-EBADF;
+			break;
+		}
+		if (cur->fds[fd].type == FD_NULL) {
+			r->eax = 0;
+			break;
+		}
+		if (cur->fds[fd].type == FD_ZERO) {
+			for (i = 0; i < len; i++)
+				((char *)buf)[i] = 0;
+			r->eax = len;
 			break;
 		}
 		if (cur->fds[fd].type == FD_CONSOLE) {
@@ -1919,6 +1937,32 @@ syscall_dispatch(struct sysregs *r)
 
 		if (path_arg(r->ebx, path, sizeof(path)) < 0) {
 			r->eax = (unsigned)-EFAULT;
+			break;
+		}
+		/* S11: the three character devices live outside the VFS */
+		if (strcmp(path, "/dev/null") == 0 ||
+		    strcmp(path, "/dev/zero") == 0 ||
+		    strcmp(path, "/dev/tty") == 0) {
+			int t;
+
+			t = (strcmp(path, "/dev/null") == 0) ? FD_NULL :
+			    (strcmp(path, "/dev/zero") == 0) ? FD_ZERO :
+			    FD_CONSOLE;
+			for (fd = 0; fd < NFD; fd++)
+				if (!cur->fds[fd].used)
+					break;
+			if (fd >= NFD) {
+				r->eax = (unsigned)-EMFILE;
+				break;
+			}
+			bzero(&cur->fds[fd], sizeof(cur->fds[fd]));
+			cur->fds[fd].used = 1;
+			cur->fds[fd].type = t;
+			cur->fds[fd].rw = ((flags & O_ACCMODE) == O_RDONLY) ? 1 : 2;
+			cur->fds[fd].pipeidx = -1;
+			cur->fds[fd].node = -1;
+			cur->fds[fd].vp = 0;
+			r->eax = (unsigned)fd;
 			break;
 		}
 		rv = vfs_namei(path, &vp);
