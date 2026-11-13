@@ -570,6 +570,8 @@ vfs_absolutize(const char *cwd, const char *in, char *out, unsigned outlen)
 
 /* ---------------------------------------------------------------- namei */
 
+static void mount_add(const char *path, struct vnode *root);
+
 void
 vfs_init(void)
 {
@@ -589,6 +591,8 @@ vfs_init(void)
 	tmp_root.ops = &tmpfs_vnodeops;
 	tmp_root.node = -1;
 	rootvnode = &iso_rootv;
+	mount_add("/", &iso_rootv);
+	mount_add("/tmp", &tmp_root);
 }
 
 /*
@@ -730,4 +734,71 @@ vfs_rename(const char *oldpath, const char *newpath)
 	vn_put(odv);
 	vn_put(ndv);
 	return (rv);
+}
+/* the mount table these two mounts are all we have for now */
+struct vfs_mount {
+	const char	*m_path;
+	struct vnode	*m_root;
+};
+static struct vfs_mount mounts[2];
+static int nmounts;
+
+static void
+mount_add(const char *path, struct vnode *root)
+{
+
+	if (nmounts < 2) {
+		mounts[nmounts].m_path = path;
+		mounts[nmounts].m_root = root;
+		nmounts++;
+	}
+}
+
+/* ---- S12: render the mount table for the /dev/mounts pseudo file ---- */
+
+static unsigned
+app_str(char *buf, unsigned o, unsigned len, const char *s)
+{
+
+	while (*s && o + 1 < len)
+		buf[o++] = *s++;
+	return (o);
+}
+
+static unsigned
+app_num(char *buf, unsigned o, unsigned len, unsigned v)
+{
+	char num[12];
+	int n = 0;
+
+	if (v == 0)
+		num[n++] = '0';
+	while (v > 0) {
+		num[n++] = '0' + (v % 10);
+		v /= 10;
+	}
+	while (n > 0 && o + 1 < len)
+		buf[o++] = num[--n];
+	return (o);
+}
+
+int
+vfs_mount_list(char *buf, unsigned len)
+{
+	unsigned o = 0;
+	int i;
+
+	for (i = 0; i < nmounts; i++) {
+		int tmp = (mounts[i].m_root == &tmp_root);
+
+		o = app_str(buf, o, len, mounts[i].m_path);
+		o = app_str(buf, o, len, tmp ? " tmpfs lba=" : " iso9660 lba=");
+		o = app_num(buf, o, len, tmp ? 0 : iso_root());
+		o = app_str(buf, o, len, " size=");
+		o = app_num(buf, o, len, tmp ? 0 : iso_root_size());
+		o = app_str(buf, o, len, tmp ? " rw\n" : " ro\n");
+	}
+	if (o < len)
+		buf[o] = 0;
+	return ((int)o);
 }

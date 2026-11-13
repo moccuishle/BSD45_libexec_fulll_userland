@@ -114,6 +114,7 @@ static struct file ramfs[] = {
 #define	FD_CONSOLE	5
 #define	FD_NULL		6	/* /dev/null */
 #define	FD_ZERO		7	/* /dev/zero */
+#define	FD_MOUNTS	8	/* /dev/mounts */
 
 struct fd {
 	const unsigned char	*d;
@@ -1842,6 +1843,25 @@ syscall_dispatch(struct sysregs *r)
 			r->eax = len;
 			break;
 		}
+		if (cur->fds[fd].type == FD_MOUNTS) {
+			static char mbuf[256];
+			static int mlen = -1;
+			unsigned off = cur->fds[fd].off, n2;
+
+			if (mlen < 0)
+				mlen = vfs_mount_list(mbuf, sizeof(mbuf));
+			if (off >= (unsigned)mlen) {
+				r->eax = 0;
+				break;
+			}
+			n2 = mlen - off;
+			if (n2 > len)
+				n2 = len;
+			bcopy(mbuf + off, (char *)buf, n2);
+			cur->fds[fd].off = off + n2;
+			r->eax = n2;
+			break;
+		}
 		if (cur->fds[fd].type == FD_CONSOLE) {
 			r->eax = (unsigned)console_read((char *)buf, len);
 			break;
@@ -1942,11 +1962,13 @@ syscall_dispatch(struct sysregs *r)
 		/* S11: the three character devices live outside the VFS */
 		if (strcmp(path, "/dev/null") == 0 ||
 		    strcmp(path, "/dev/zero") == 0 ||
-		    strcmp(path, "/dev/tty") == 0) {
+		    strcmp(path, "/dev/tty") == 0 ||
+		    strcmp(path, "/dev/mounts") == 0) {
 			int t;
 
 			t = (strcmp(path, "/dev/null") == 0) ? FD_NULL :
 			    (strcmp(path, "/dev/zero") == 0) ? FD_ZERO :
+			    (strcmp(path, "/dev/mounts") == 0) ? FD_MOUNTS :
 			    FD_CONSOLE;
 			for (fd = 0; fd < NFD; fd++)
 				if (!cur->fds[fd].used)
