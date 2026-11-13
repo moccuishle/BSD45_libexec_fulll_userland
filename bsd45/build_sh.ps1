@@ -276,7 +276,7 @@ Write-Host ("built {0} ({1:N0} bytes)" -f $elf, (Get-Item $elf).Length)
 
 if ($Target -eq "sh") {
     # /bin/echo, /bin/ls: small tools linked against the same libc.
-    foreach ($tool in @("echo", "ls", "cat", "mkdir", "kill", "sleep", "rm", "cp", "mv", "wc", "grep")) {
+    foreach ($tool in @("echo", "ls", "cat", "mkdir", "kill", "sleep", "rm", "cp", "mv", "wc", "grep", "head", "tail")) {
         $tobj = "$obj\$tool.o"
         if (Compile-C (Join-Path $ws "libexec\$tool.c") $tobj) {
             $tobjs = @($libobjs) + @($tobj)
