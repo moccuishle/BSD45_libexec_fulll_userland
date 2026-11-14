@@ -59,7 +59,8 @@ for pair in "sh:bin/SH.ELF" "init:sbin/INIT.ELF" "hello:HELLO.ELF" "test:TEST.EL
             "ls:bin/LS.ELF" "mkdir:bin/MKDIR.ELF" "cat:bin/CAT.ELF" "echo:bin/ECHO.ELF" \
             "kill:bin/KILL.ELF" "sleep:bin/SLEEP.ELF" "rm:bin/RM.ELF" "cp:bin/CP.ELF" \
             "mv:bin/MV.ELF" "wc:bin/WC.ELF" "grep:bin/GREP.ELF" "head:bin/HEAD.ELF" \
-            "tail:bin/TAIL.ELF" "df:bin/DF.ELF" "mount:bin/MOUNT.ELF" "ps:bin/PS.ELF"; do
+            "tail:bin/TAIL.ELF" "df:bin/DF.ELF" "mount:bin/MOUNT.ELF" "ps:bin/PS.ELF" \
+            "uname:bin/UNAME.ELF" "true:bin/TRUE.ELF" "false:bin/FALSE.ELF"; do
     name="${pair%%:*}"; dst="${pair#*:}"
     [ -f "$ws/out/userland/$name.elf" ] && cp -f "$ws/out/userland/$name.elf" "$isodir/$dst"
 done

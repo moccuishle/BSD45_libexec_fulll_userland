@@ -21,6 +21,7 @@
 #include <sys/user.h>
 #include <sys/termios.h>
 #include <sys/ttycom.h>
+#include <sys/utsname.h>
 
 #include <vm/vm.h>
 #include <vm/vm_page.h>
@@ -2851,6 +2852,24 @@ syscall_dispatch(struct sysregs *r)
 		}
 		bcopy(cur->p_cwd, (void *)buf, n);
 		r->eax = buf;
+		break;
+	}
+	case 164: {			/* uname(struct utsname *) */
+		unsigned buf = r->ebx;
+		struct utsname *up = (struct utsname *)buf;
+
+		if (!user_ok(buf, sizeof(*up))) {
+			r->eax = (unsigned)-EFAULT;
+			break;
+		}
+		bzero(up, sizeof(*up));
+		bcopy("BSD45", up->sysname, sizeof("BSD45"));
+		bcopy("bsd45", up->nodename, sizeof("bsd45"));
+		bcopy("1.0", up->release, sizeof("1.0"));
+		bcopy("4.4BSD-Lite2 i386 ELF kernel", up->version,
+		    sizeof("4.4BSD-Lite2 i386 ELF kernel"));
+		bcopy("i386", up->machine, sizeof("i386"));
+		r->eax = 0;
 		break;
 	}
 	}

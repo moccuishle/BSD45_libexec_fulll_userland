@@ -104,6 +104,12 @@ $mntb = Join-Path $ws "out\userland\mount.elf"
 if (Test-Path $mntb) { Copy-Item $mntb "$isodir\bin\MOUNT.ELF" -Force }
 $psb = Join-Path $ws "out\userland\ps.elf"
 if (Test-Path $psb) { Copy-Item $psb "$isodir\bin\PS.ELF" -Force }
+$unb = Join-Path $ws "out\userland\uname.elf"
+if (Test-Path $unb) { Copy-Item $unb "$isodir\bin\UNAME.ELF" -Force }
+$trb = Join-Path $ws "out\userland\true.elf"
+if (Test-Path $trb) { Copy-Item $trb "$isodir\bin\TRUE.ELF" -Force }
+$flb = Join-Path $ws "out\userland\false.elf"
+if (Test-Path $flb) { Copy-Item $flb "$isodir\bin\FALSE.ELF" -Force }
 Copy-Item "$bld\boot.img" "$isodir\boot.img" -Force
 # rootfs_overlay/ is copied on top of the ISO root: /etc/profile,
 # /README.TXT and the empty bin/sbin/tmp skeleton.

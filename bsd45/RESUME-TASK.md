@@ -3,8 +3,8 @@
 更新时间：2026-11-15（Asia/Shanghai）
 状态：**S13 完成**（`/dev/ps` + `/bin/ps`）；Windows（MSYS2 ucrt64 GCC 16.2 +
 `xorriso`）15 套验收全绿，Linux(Ubuntu 26.04 LTS) 走同一套 `.sh` 脚本。
-下一步：`/bin/uname`、`/bin/true`、`/bin/false` → `ps` 增强 → `kill %job` →
-真 `fg`/`bg`（见 0.0.5 与 0.8）。
+下一步：`/bin/ps` 增强（`comm`/`-a`/`-x`）→ `kill %job` → 真 `fg`/`bg`
+（见 0.0.5、0.8、0.9）。
 仓库：https://github.com/moccuishle/BSD45_rootfs_overlay
 
 本机环境（网吧 Windows，无管理员、防火墙不可关）：
@@ -635,6 +635,48 @@ ISO 4,591,616 字节（与 mkisofs 产物同尺寸），内核 `bsd45.elf` 396,3
 `genassym` 那一步会报 `Access is denied`。本地用 `build/_bk.ps1`
 （同脚本，改成 `& $ga | Out-File -Encoding ascii`）绕过；
 `tools/run_qemu_test.ps1` 用的是不带重定向的 `Start-Process`，不受影响。
+
+## 0.9 2026-11-15 S14：`/bin/uname`、`/bin/true`、`/bin/false` ✅
+
+**实现**
+
+1. **内核** `syscall_dispatch()` 新增 `case 164`（4.5BSD `uname(2)`）：
+   先 `user_ok(buf, sizeof(struct utsname))`，再直接填
+   `BSD45` / `bsd45` / `1.0` / `4.4BSD-Lite2 i386 ELF kernel` / `i386`。
+   结构体用内核自带的 `kernel/include/sys/utsname.h`（五个 256 字节字段，
+   共 1280 字节；不在内核栈上放副本，直接写用户缓冲）。
+2. **libc** `libc_sys.c`：`#define SYS_uname 164` + `uname()` 薄封装
+   （负 errno → `-1`/`errno`，与其它 stub 一致）。
+3. **工具** `libexec/uname.c`（`-a/-s/-n/-r/-v/-m`，可合并如 `-sn`，默认 `-s`）、
+   `libexec/true.c`、`libexec/false.c`（退出码 0/1）。
+4. **构建**：三个名字加进 `build_sh.ps1` / `build_sh.sh` 的工具表，
+   `build_iso.ps1` / `build_iso.sh` 装成 `BIN/{UNAME,TRUE,FALSE}.ELF`。
+5. **验收**：`tools/test_tools.ps1/.sh` 从 head/tail 扩成
+   head/tail/uname/true/false；退出码用 `true && echo true-ok` /
+   `false || echo false-ok` 验证（`$?` 会被 PowerShell 先展开，别用）。
+
+**验收**（QEMU 串口实录）
+
+```
+# uname
+BSD45
+# uname -a
+BSD45 bsd45 1.0 4.4BSD-Lite2 i386 ELF kernel i386
+# uname -m
+i386
+# uname -s
+BSD45
+# uname -r
+1.0
+# uname -v
+4.4BSD-Lite2 i386 ELF kernel
+# true && echo T-ok
+T-ok
+# false || echo F-ok
+F-ok
+```
+
+`tools/all_tests.sh`：15 套全绿（`test_tools` 已含上述断言）。
 
 ## S100（长期方向，未开工）微内核与宏内核的边界：盘点、对照实验与取舍
 

@@ -17,6 +17,7 @@
 #include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/uio.h>
+#include <sys/utsname.h>
 #include <dirent.h>
 #include <termios.h>
 #include <pwd.h>
@@ -74,6 +75,7 @@
 #define	SYS_fstat	188
 #define	SYS_stat	189
 #define	SYS_lstat	190
+#define	SYS_uname	164
 #define	SYS_setitimer2	83
 
 int	errno;
@@ -667,6 +669,13 @@ getcwd(char *buf, size_t size)
 	buf[0] = '/';
 	buf[1] = 0;
 	return (buf);
+}
+
+int
+uname(struct utsname *name)
+{
+
+	return (syscall_rv(sys1(SYS_uname, (int)name)));
 }
 
 int
