@@ -122,9 +122,23 @@ Get-ChildItem $isodir -Recurse -Filter ".keep" -Force -ErrorAction SilentlyConti
 
 if (Test-Path $OutIso) { Remove-Item $OutIso -Force }
 $mkArgs = @()
-if ([IO.Path]::GetFileNameWithoutExtension($MKISO) -eq "xorriso") { $mkArgs += @("-as", "mkisofs") }
+$mkDir = $isodir
+$mkOut = $OutIso
+if ([IO.Path]::GetFileNameWithoutExtension($MKISO) -eq "xorriso") {
+    $mkArgs += @("-as", "mkisofs")
+    # MSYS2's /usr/bin/xorriso is a POSIX program: it understands "/c/..."
+    # but not "C:\..." (it prepends the cwd and then fails to stat the source).
+    # Native mkisofs.exe (VMware) is the other way round, so only convert when
+    # we actually picked up the MSYS2 build.
+    if ($MKISO -match '[\\/]usr[\\/]bin[\\/]') {
+        $mkDir = $isodir -replace '\\', '/'
+        $mkOut = $OutIso -replace '\\', '/'
+        if ($mkDir -match '^([A-Za-z]):(.*)$') { $mkDir = '/' + $Matches[1].ToLower() + $Matches[2] }
+        if ($mkOut -match '^([A-Za-z]):(.*)$') { $mkOut = '/' + $Matches[1].ToLower() + $Matches[2] }
+    }
+}
 & $MKISO @mkArgs -quiet -iso-level 1 -V "BSD45_ELF_X86" -b boot.img -c boot.cat `
-    -no-emul-boot -boot-load-size 8 -o $OutIso $isodir
+    -no-emul-boot -boot-load-size 8 -o $mkOut $mkDir
 if ($LASTEXITCODE) { throw "mkisofs failed" }
 
 # pad the ISO to the kernel LBA and append the ELF kernel there

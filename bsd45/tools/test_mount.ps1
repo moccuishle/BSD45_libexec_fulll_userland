@@ -20,7 +20,9 @@ $log = (& $runner -Iso $Iso -Keys "shell|df|mount|cat /dev/mounts|exit 0" `
 
 Check "df header" $log @("Filesystem  Mounted on  Size")
 Check "mount"     $log @("device on mount point type")
-Check "iso mount" $log @("iso9660 lba=24")
+# The ISO root LBA depends on the mastering tool (VMware mkisofs: 24,
+# MSYS2 xorriso: 19), so only assert the shape of the line, not the LBA.
+Check "iso mount" $log @("iso9660 lba=")
 Check "tmpfs"     $log @("tmpfs")
 Check "rw/ro"     $log @(" ro", " rw")
 Check "exit"      $log @("[user exit 0]")
