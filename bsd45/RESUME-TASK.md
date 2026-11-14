@@ -785,6 +785,43 @@ vmnet8 NAT）：`gcc 15.2.0 + gcc-multilib + libc6-dev-i386`、
 | Windows（ucrt64 GCC 16.2 + xorriso） | `build_all.ps1` | 4,595,712 B | **ALL SUITES PASSED** |
 | Ubuntu 26.04（GCC 15.2 + genisoimage，TCG） | `build_all.sh` | 4,257,792 B | **ALL SUITES PASSED** |
 
+## 0.13 2026-11-15 S100.1 / S100.2：边界契约与微内核设计（文档落地）
+
+原则：**“晚分叉”不等于“晚设计”**——先在单基线里把边界固定成可检查的契约，
+再谈分叉。
+
+**新增文档（仓库根 `docs/`）**
+
+- `docs/kernel-boundary.md`（S100.1）
+  - 真正编进内核的 14 个源文件 + 行数（约 9.3k 行）；特别标注
+    `kernel/sys|vm|net/` 的 4.5BSD 树**没有编译**，只是参考，别拿它估工作量；
+  - 判定原则 + 每个模块的「留内核 / 可上移」表；
+  - **KP-1..KP-9 内核原语契约**：已有 `user_ok`(KP-1)、`pmap_map`/`vfs_page_*`
+    (KP-2/3)、`inb/outb`(KP-5)、`gettimeofday`(KP-8)；缺
+    `block_on/wakeup`(KP-4) 与 IPC/共享页(KP-6/7)；
+  - 违规审计（基于 `c89e4fd`）：**硬违规 0**——FS/驱动没有直接碰进程表、
+    调度器、页分配器；层次债 8 处（isofs 直接调 `atapi_*`、vfs 直接
+    `pmap_map`），每条都标了迁移阶段。
+- `docs/microkernel-design.md`（S100.2）
+  - 方案 A（宏内核加固）vs B（微内核化）的成本对照；
+  - IPC：消息格式、端口表、会合语义、共享页「谁分配谁释放 + ACK」协议；
+  - 一次 `read("/tmp/a")` 的完整路径（syscall → 转发 → fs_server → 共享页 → 回程）；
+  - 服务布局（`/sbin/fs_server`、`/sbin/tty_server`、内核内 bdev）与启动序列
+    （含 10 秒看门狗回退 ramfs）；
+  - 故障模型、`-Variant mono|micro` 构建开关、度量指标、风险与回退。
+
+**新增工具**
+
+- `bsd45/tools/check-boundary.sh`：把边界变成可执行检查。
+  硬规则（`cur/procs/proc_*/P_BLOCKED/page_alloc/page_free/zero_page/user_map/
+  pmap_enter/pmap_remove` 出现在 `kernel/fs/*.c`、`kernel/driver/*.c`）有 1 处
+  就 exit 1；层次债（`atapi_*`、`pmap_map`）只打印不阻断。
+  当前输出：`hard rules: OK (0 violations)`、`known layering debt: 8`。
+
+**下一步（S100.2a）**：把 tmpfs 从 `kernel/fs/vfs.c` 原样搬到
+`kernel/fs/tmpfs.c`（纯搬移、`vnodeops` 不变），跑 15 套确认 0 行为变化，
+之后再加 `-Variant` 开关。
+
 ## S100（长期方向，未开工）微内核与宏内核的边界：盘点、对照实验与取舍
 
 > 这是**架构方向**任务，不是功能增量。它不影响 S11–S99 的日常功能开发，
