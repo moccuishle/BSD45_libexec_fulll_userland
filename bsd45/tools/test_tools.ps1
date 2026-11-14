@@ -16,7 +16,7 @@ function Check([string]$name, [string]$log, [string[]]$needles) {
 
 Write-Host "tools acceptance: head/tail/uname/true/false"
 $log = (& $runner -Iso $Iso `
-    -Keys "shell|head -2 /readme.txt|tail -2 /readme.txt|head -1 /readme.txt|uname|uname -a|true && echo true-ok|false || echo false-ok|exit 0" `
+    -Keys "shell|head -2 /readme.txt|tail -2 /readme.txt|head -1 /readme.txt|uname|uname -a|true && echo true-ok|false || echo false-ok|date|exit 0" `
     -WaitFor "user exit" -TimeoutSec 120) -join "`n"
 
 Check "head"  $log @("BSD45-ELF-x86  -  4.4BSD-Lite2 i386 ELF kernel")
@@ -25,6 +25,12 @@ Check "tail"  $log @("bsd45> help")
 Check "uname" $log @("BSD45 bsd45 1.0 4.4BSD-Lite2 i386 ELF kernel i386")
 Check "true"  $log @("true-ok")
 Check "false" $log @("false-ok")
+if ($log -match '(Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) +\d+ \d\d:\d\d:\d\d UTC \d{4}') {
+    Write-Host "  ok   date: well-formed timestamp" -ForegroundColor Green
+} else {
+    Write-Host "  FAIL date: no well-formed timestamp" -ForegroundColor Red
+    $fails++
+}
 Check "exit"  $log @("[user exit 0]")
 
 if ($log -match '\*\*\* TRAP') { Write-Host "  FAIL kernel trap" -ForegroundColor Red; $fails++ }

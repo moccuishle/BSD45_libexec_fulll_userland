@@ -22,6 +22,7 @@
 #include <sys/termios.h>
 #include <sys/ttycom.h>
 #include <sys/utsname.h>
+#include <sys/time.h>
 
 #include <vm/vm.h>
 #include <vm/vm_page.h>
@@ -1582,6 +1583,74 @@ user_ok(unsigned p, unsigned len)
 }
 
 /*
+ * S16: wall clock.  The kernel has no clock interrupt handler wired up, so
+ * read the CMOS RTC directly instead: registers are indexed through port
+ * 0x70 and read from 0x71 by rtcin() in locore.s.  The RTC holds local time
+ * (the host's time zone); we hand it out as UTC until a timezone table
+ * exists.  Sub-second resolution is not available, hence tv_usec = 0.
+ */
+extern unsigned char rtcin(int);
+
+static int
+rtc_bcd(int v)
+{
+
+	return ((v & 0xf) + (v >> 4) * 10);
+}
+
+static long
+rtc_days(int y, int m, int d)
+{
+	static const int mdays[12] = { 0, 31, 59, 90, 120, 151, 181, 212, 243,
+	    273, 304, 334 };
+	long days = 0;
+	int i, leap;
+
+	for (i = 1970; i < y; i++) {
+		leap = (i % 4 == 0 && (i % 100 != 0 || i % 400 == 0));
+		days += 365 + leap;
+	}
+	days += mdays[m - 1];
+	if (m > 2 && (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)))
+		days++;
+	days += d - 1;
+	return (days);
+}
+
+static long
+rtc_epoch(void)
+{
+	int sec, min, hour, day, mon, year, i;
+	unsigned char sb;
+
+	/* wait for the update-in-progress flag to clear */
+	for (i = 0; i < 1000000; i++)
+		if ((rtcin(0x0a) & 0x80) == 0)
+			break;
+	sb = rtcin(0x0b);
+	sec = rtcin(0x00);
+	min = rtcin(0x02);
+	hour = rtcin(0x04);
+	day = rtcin(0x07);
+	mon = rtcin(0x08);
+	year = rtcin(0x09);
+	if ((sb & 0x02) == 0 && (hour & 0x80) != 0)	/* 12-hour clock, PM */
+		hour = (hour & 0x7f) + 12;
+	if ((sb & 0x04) == 0) {				/* BCD, not binary */
+		sec = rtc_bcd(sec);
+		min = rtc_bcd(min);
+		hour = rtc_bcd(hour);
+		day = rtc_bcd(day);
+		mon = rtc_bcd(mon);
+		year = rtc_bcd(year);
+	}
+	if (mon < 1 || mon > 12 || day < 1 || day > 31)
+		return (0);
+	return (rtc_days(year + 2000, mon, day) * 86400L +
+	    hour * 3600L + min * 60L + sec);
+}
+
+/*
  * Fill a 4.4BSD i386 `struct stat` (96 bytes):
  *	0 dev, 4 ino, 8 mode(16), 10 nlink(16), 12 uid, 16 gid, 20 rdev,
  *	24 atimespec, 32 mtimespec, 40 ctimespec,
@@ -2877,6 +2946,27 @@ syscall_dispatch(struct sysregs *r)
 		}
 		bcopy(cur->p_cwd, (void *)buf, n);
 		r->eax = buf;
+		break;
+	}
+	case 116: {			/* gettimeofday(timeval *, timezone *) */
+		unsigned tvp = r->ebx, tzp = r->ecx;
+		struct timeval tv;
+
+		if (tvp != 0 && !user_ok(tvp, sizeof(tv))) {
+			r->eax = (unsigned)-EFAULT;
+			break;
+		}
+		if (tzp != 0 && !user_ok(tzp, 8)) {
+			r->eax = (unsigned)-EFAULT;
+			break;
+		}
+		tv.tv_sec = rtc_epoch();
+		tv.tv_usec = 0;
+		if (tvp != 0)
+			bcopy(&tv, (void *)tvp, sizeof(tv));
+		if (tzp != 0)
+			bzero((void *)tzp, 8);
+		r->eax = 0;
 		break;
 	}
 	case 164: {			/* uname(struct utsname *) */

@@ -3,8 +3,8 @@
 更新时间：2026-11-15（Asia/Shanghai）
 状态：**S13 完成**（`/dev/ps` + `/bin/ps`）；Windows（MSYS2 ucrt64 GCC 16.2 +
 `xorriso`）15 套验收全绿，Linux(Ubuntu 26.04 LTS) 走同一套 `.sh` 脚本。
-下一步：`ps` 的 `-a/-x`（要先有 per-process tty/session）→ `kill %job` →
-真 `fg`/`bg`（见 0.0.5、0.8、0.9、0.10）。
+下一步：per-process tty/session（`ps -a/-x` 与作业控制的前提）→ `kill %job` →
+真 `fg`/`bg`（见 0.0.5、0.8、0.9、0.10、0.11）。
 仓库：https://github.com/moccuishle/BSD45_rootfs_overlay
 
 本机环境（网吧 Windows，无管理员、防火墙不可关）：
@@ -704,6 +704,40 @@ PID PPID PGRP STAT COMM
 **已知限制**：内核还没有 per-process 的 tty/session 信息，所以 `ps -a`/`-x`
 的真实过滤语义（BSD：`-a` 看有 tty 的非会话首进程、`-x` 连无 tty 的一起看）
 要等作业控制/会话模型落地后再补；当前 `ps` 列出全部进程。
+
+## 0.11 2026-11-15 S16：真实时间（CMOS RTC）+ `/bin/date` ✅
+
+原状：`gettimeofday()` 是 libc 里写死的 `784000000`（1994-11-04），内核没有
+116 号系统调用，也没有 `date`。
+
+**实现**
+
+1. **内核** `usermode.c`：`rtc_epoch()` 直接读 CMOS RTC（0x70 索引 / 0x71 数据，
+   经 `locore.s` 的 `rtcin()`）——等状态寄存器 A 的 UIP 位清零，按状态寄存器 B
+   判断 BCD/二进制与 12/24 小时，再用 `rtc_days()` 把「1970-01-01 起的天数」
+   换成秒。`gettimeofday(2)`（116）填 `struct timeval`（`tv_usec` 恒 0，
+   没有亚秒时钟源），`timezone` 参数清零。
+2. **libc**：`gettimeofday()` 改走 116 号系统调用，不再返回假时间；
+   `time(3)` 因此也变成真实时间。
+3. **工具** `libexec/date.c`：这个 libc 子集没有 `gmtime/strftime`，所以内置
+   Hinnant 的 days→civil 算法，输出 `Sat Nov 14 17:43:29 UTC 2026`
+   （QEMU/VMware 的 RTC 就是 UTC）。
+4. **构建/验收**：`date` 进工具表与 `BIN/DATE.ELF`；`test_tools` 增加
+   `date` 的正则断言（`Www Mmm dd hh:mm:ss UTC yyyy`）。
+
+**验收**
+
+```
+# date
+Sat Nov 14 17:43:29 UTC 2026
+# echo date-st=$?
+date-st=0
+```
+
+`tools/all_tests.sh` 15 套全绿（ISO 4,595,712 字节）。
+
+**已知限制**：没有时钟中断，`tv_usec` 恒 0；`sleep(1)` 仍是忙等假实现，
+真 sleep 要等时钟中断/超时队列（与 S10.2 的限制同源）。
 
 ## S100（长期方向，未开工）微内核与宏内核的边界：盘点、对照实验与取舍
 

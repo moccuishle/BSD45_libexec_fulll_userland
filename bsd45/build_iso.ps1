@@ -110,6 +110,8 @@ $trb = Join-Path $ws "out\userland\true.elf"
 if (Test-Path $trb) { Copy-Item $trb "$isodir\bin\TRUE.ELF" -Force }
 $flb = Join-Path $ws "out\userland\false.elf"
 if (Test-Path $flb) { Copy-Item $flb "$isodir\bin\FALSE.ELF" -Force }
+$dtb = Join-Path $ws "out\userland\date.elf"
+if (Test-Path $dtb) { Copy-Item $dtb "$isodir\bin\DATE.ELF" -Force }
 Copy-Item "$bld\boot.img" "$isodir\boot.img" -Force
 # rootfs_overlay/ is copied on top of the ISO root: /etc/profile,
 # /README.TXT and the empty bin/sbin/tmp skeleton.

@@ -542,17 +542,9 @@ setrlimit(int res, const struct rlimit *rlp)
 int
 gettimeofday(struct timeval *tp, struct timezone *tzp)
 {
-	static struct timeval tv;
 
-	tv.tv_sec = 784000000;		/* 1994-11-04, "4.4BSD time" */
-	tv.tv_usec = 0;
-	if (tp)
-		*tp = tv;
-	if (tzp) {
-		tzp->tz_minuteswest = 0;
-		tzp->tz_dsttime = 0;
-	}
-	return (0);
+	/* S16: the kernel reads the CMOS RTC (whole seconds only). */
+	return (syscall_rv(sys3(SYS_gettimeofday, (int)tp, (int)tzp, 0)));
 }
 
 time_t
