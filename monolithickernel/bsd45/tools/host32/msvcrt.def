@@ -1,9 +1,0 @@
-LIBRARY msvcrt.dll
-EXPORTS
-printf
-fprintf
-sprintf
-puts
-putchar
-exit
-_write
