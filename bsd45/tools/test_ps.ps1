@@ -18,9 +18,9 @@ Write-Host "S13 acceptance: /dev/ps + /bin/ps"
 $log = (& $runner -Iso $Iso -Keys "shell|ps|cat /dev/ps|exit 0" `
     -WaitFor "user exit" -TimeoutSec 120) -join "`n"
 
-Check "header"  $log @("PID PPID PGRP STAT")
-Check "init"    $log @("1 0 1 BLOCK")
-Check "self"    $log @("2 1 2 RUN")
+Check "header"  $log @("PID PPID PGRP STAT COMM")
+Check "shell"   $log @("1 0 1 BLOCK sh")
+Check "self"    $log @("2 1 2 RUN ps")
 Check "exit"    $log @("[user exit 0]")
 
 if ($log.Contains("cannot open /dev/ps")) { Write-Host "  FAIL /dev/ps unreadable" -ForegroundColor Red; $fails++ }

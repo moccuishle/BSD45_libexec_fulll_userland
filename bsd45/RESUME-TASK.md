@@ -3,8 +3,8 @@
 更新时间：2026-11-15（Asia/Shanghai）
 状态：**S13 完成**（`/dev/ps` + `/bin/ps`）；Windows（MSYS2 ucrt64 GCC 16.2 +
 `xorriso`）15 套验收全绿，Linux(Ubuntu 26.04 LTS) 走同一套 `.sh` 脚本。
-下一步：`/bin/ps` 增强（`comm`/`-a`/`-x`）→ `kill %job` → 真 `fg`/`bg`
-（见 0.0.5、0.8、0.9）。
+下一步：`ps` 的 `-a/-x`（要先有 per-process tty/session）→ `kill %job` →
+真 `fg`/`bg`（见 0.0.5、0.8、0.9、0.10）。
 仓库：https://github.com/moccuishle/BSD45_rootfs_overlay
 
 本机环境（网吧 Windows，无管理员、防火墙不可关）：
@@ -677,6 +677,33 @@ F-ok
 ```
 
 `tools/all_tests.sh`：15 套全绿（`test_tools` 已含上述断言）。
+
+## 0.10 2026-11-15 S15：`/dev/ps` 增加 `COMM`（进程名） ✅
+
+**实现**
+
+1. `struct uproc` 增加 `char p_comm[16]`；新增 `proc_setcomm()`，取可执行文件
+   的 basename（`/bin/ps` → `ps`）；`execve` 时更新，`fork`/`vfork` 继承，
+   `start_prog()`（pid 1）也设置，并顺带把 pid 1 的 `p_cwd` 补成 `/`
+   （它绕过 `proc_alloc`，之前 cwd 是空串）。
+2. `/dev/ps` 每行变成 `PID PPID PGRP STAT COMM`；`/bin/ps` 表头同步。
+3. `tools/test_ps.ps1/.sh` 断言 `PID PPID PGRP STAT COMM`、
+   `1 0 1 BLOCK sh`、`2 1 2 RUN ps`。
+
+**验收**
+
+```
+# ps
+PID PPID PGRP STAT COMM
+1 0 1 BLOCK sh
+2 1 2 RUN ps
+```
+
+`tools/all_tests.sh` 15 套全绿。
+
+**已知限制**：内核还没有 per-process 的 tty/session 信息，所以 `ps -a`/`-x`
+的真实过滤语义（BSD：`-a` 看有 tty 的非会话首进程、`-x` 连无 tty 的一起看）
+要等作业控制/会话模型落地后再补；当前 `ps` 列出全部进程。
 
 ## S100（长期方向，未开工）微内核与宏内核的边界：盘点、对照实验与取舍
 

@@ -20,7 +20,7 @@ main(int argc, char **argv)
 		printf("ps: /dev/ps: cannot open\n");
 		return (1);
 	}
-	printf("PID PPID PGRP STAT\n");
+	printf("PID PPID PGRP STAT COMM\n");
 	while ((n = read(fd, buf, sizeof(buf))) > 0)
 		write(1, buf, n);
 	close(fd);

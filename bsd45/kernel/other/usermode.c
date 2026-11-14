@@ -196,6 +196,7 @@ struct uproc {
 	unsigned	p_sighand[NSIG]; /* user handler addresses */
 	int		p_pgrp;		/* process group */
 	char		p_cwd[128];	/* current working directory */
+	char		p_comm[16];	/* S15: executable basename for /dev/ps */
 	int		p_stopsig;	/* signal that stopped us (0 = running) */
 	int		p_termsig;	/* signal that killed us (0 = exited) */
 	int		p_cont;		/* SIGCONT arrived while stopped */
@@ -1033,6 +1034,25 @@ proc_alloc(void)
 	return (0);
 }
 
+/*
+ * S15: remember a short process name for /dev/ps ("comm").  The kernel does
+ * not keep argv around, so the executable's basename is the best we have.
+ */
+static void
+proc_setcomm(struct uproc *p, const char *path)
+{
+	const char *base, *s;
+	int i;
+
+	base = path;
+	for (s = path; *s; s++)
+		if (*s == '/')
+			base = s + 1;
+	bzero(p->p_comm, sizeof(p->p_comm));
+	for (i = 0; i < (int)sizeof(p->p_comm) - 1 && base[i] != 0; i++)
+		p->p_comm[i] = base[i];
+}
+
 static struct uproc *
 proc_find(int pid)
 {
@@ -1107,6 +1127,7 @@ do_fork(struct sysregs *r)
 	p->pd = pd;
 	p->brk_mapped = cur->brk_mapped;
 	bcopy(cur->p_cwd, p->p_cwd, sizeof(p->p_cwd));
+	bcopy(cur->p_comm, p->p_comm, sizeof(p->p_comm));
 	bcopy(cur->fds, p->fds, sizeof(p->fds));
 	{
 		int i;
@@ -1154,6 +1175,7 @@ do_vfork(struct sysregs *r)
 	p->pd = pd;
 	p->brk_mapped = cur->brk_mapped;
 	bcopy(cur->p_cwd, p->p_cwd, sizeof(p->p_cwd));
+	bcopy(cur->p_comm, p->p_comm, sizeof(p->p_comm));
 	bcopy(cur->fds, p->fds, sizeof(p->fds));
 	p->regs = *r;
 	p->regs.eax = 0;
@@ -1523,6 +1545,8 @@ proc_list_text(char *buf, unsigned len)
 		o = ps_num(buf, o, len, (unsigned)procs[i].p_pgrp);
 		o = ps_str(buf, o, len, " ");
 		o = ps_str(buf, o, len, st);
+		o = ps_str(buf, o, len, " ");
+		o = ps_str(buf, o, len, procs[i].p_comm);
 		o = ps_str(buf, o, len, "\n");
 	}
 	if (o < len)
@@ -2115,6 +2139,7 @@ syscall_dispatch(struct sysregs *r)
 			r->eax = (unsigned)-EFAULT;
 			break;
 		}
+		proc_setcomm(cur, path);
 		n = (unsigned)exec_image(path, r->ecx, r->edx, r);
 		if ((int)n < 0)
 			r->eax = n;
@@ -2943,6 +2968,9 @@ start_prog(const char *path, const char *script)
 	cur->ppid = 0;
 	cur->pd = pd;
 	cur->brk_mapped = USER_HEAP_START;
+	cur->p_cwd[0] = '/';
+	cur->p_cwd[1] = 0;
+	proc_setcomm(cur, path);
 	{
 		int fd;
 
