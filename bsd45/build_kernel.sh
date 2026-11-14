@@ -161,6 +161,7 @@ sources=(
     "c:$src/other/mon.c"
     "c:$src/driver/atapi.c"
     "c:$src/fs/isofs.c"
+    "c:$src/fs/tmpfs.c"
     "c:$src/fs/vfs.c"
 )
 for spec in "${sources[@]}"; do

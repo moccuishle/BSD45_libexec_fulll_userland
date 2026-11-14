@@ -822,6 +822,32 @@ vmnet8 NAT）：`gcc 15.2.0 + gcc-multilib + libc6-dev-i386`、
 `kernel/fs/tmpfs.c`（纯搬移、`vnodeops` 不变），跑 15 套确认 0 行为变化，
 之后再加 `-Variant` 开关。
 
+## 0.14 2026-11-15 S100.2a：tmpfs 从 `vfs.c` 拆出（纯搬移）✅
+
+**改动**
+
+1. 新增 `kernel/fs/tmpfs.c`（352 行）：tmpfs 节点表、数据页惰性分配 /
+   `pmap_map` 内核窗口、11 个 vnodeops 实现，全部从 `vfs.c` 原样搬出；对外只
+   暴露 `tmpfs_init()` / `tmpfs_root()` / `tmpfs_is_root()` 和
+   `tmpfs_vnodeops`。
+2. `kernel/fs/vfs.c` 804 → 500 行：只剩 vnode 池、`namei()`、挂载表、
+   `vfs_absolutize/rename/mount_list` 和 ISO9660 vnodeops（ISO 后端计划在
+   S100.4 再搬）；顺手删掉已经没人用的 `extern int user_ok()` 声明。
+3. `vn_alloc()` 由 `static` 改为公开（backend 需要为 lookup 结果分配 vnode），
+   在 `vfs.h` 声明；`vfs.h` 同时声明 `tmpfs_*` 三个入口。
+4. `vfs_init()` 不再直接初始化 `tmp_root`，改为 `tmpfs_init()` +
+   `mount_add("/tmp", tmpfs_root())`；`namei()` 的 `/tmp` 特例和 `vn_put()`
+   的「挂载根不回收」判断都改走 `tmpfs_is_root()`，`vfs.c` 里不再出现
+   `tmp_root`。
+5. 构建：`build_kernel.ps1/.sh` 的源文件表加 `tmpfs.c`。
+
+**验收**：Windows 15 套全绿（按用户要求本轮只验 Windows，不跑 Ubuntu）。
+`tools/check-boundary.sh`：硬规则 0 违规，层次债 7 条
+（isofs 5 + tmpfs 的 `pmap_map` 1 + vfs 的 `atapi_read` 1）。
+
+**下一步**：加 `-Variant mono|micro` 构建开关（先只认 `mono`，零行为变化），
+然后 S100.3 落 KP-4/6/7 + `fs_server`。
+
 ## S100（长期方向，未开工）微内核与宏内核的边界：盘点、对照实验与取舍
 
 > 这是**架构方向**任务，不是功能增量。它不影响 S11–S99 的日常功能开发，

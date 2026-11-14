@@ -4,7 +4,7 @@
 > 「内核态保留什么、什么可以上移到用户态服务、两边通过哪些原语说话」固定成一份
 > 可检查的契约。本文只描述现状与规则，不改代码。
 >
-> 基线：`c89e4fd`（2026-11-15，Windows 与 Ubuntu 双端 15 套验收全绿）。
+> 基线：S100.2a 之后（tmpfs 已从 `vfs.c` 拆到 `tmpfs.c`；Windows 15 套全绿）。
 
 ---
 
@@ -22,26 +22,27 @@
 ## 1. 内核里到底编了什么
 
 `build_kernel.ps1` / `build_kernel.sh` 实际编译的文件（不含生成的 `embed.c`、
-`vector.s`、`assym.s`）：
+`vector.s`、`assym.s`；行数用 `wc -l`）：
 
 | 文件 | 行数 | 作用 | 可上移性 |
 |---|---:|---|---|
-| `kernel/arch/i386/isa/locore.s` | 1555 | 启动、trap 入口、`inb/outb/insw/outsw`、`rtcin` | **留**（特权指令） |
-| `kernel/arch/i386/isa/pmap.c` | 1552 | 页表 / pmap | **留** |
-| `kernel/arch/i386/isa/machdep.c` | 1017 | 机器相关启动、控制台探测 | **留** |
-| `kernel/arch/i386/i386/cons.c` | 181 | ROM console 桩（实际用 pccon） | **留** |
-| `kernel/other/usermode.c` | 2827 | 进程/调度/信号/fd/系统调用/ELF 装载/**控制台行规程**/**tmpfs 页原语** | **拆**（见第 4 节） |
-| `kernel/other/usermode_asm.s` | 76 | `resume_user` 等 | **留** |
-| `kernel/other/glue.c` | 259 | 内核运行时 glue（printf、panic…） | **留** |
-| `kernel/other/mon.c` | 285 | 板载 monitor（`bsd45>`） | **留** |
-| `kernel/other/stubs.c` | 82 | 4.5BSD 桩 | **留** |
-| `kernel/other/strings.c` | 50 | 内核字符串 | **留** |
-| `kernel/driver/pccon.c` | 229 | VGA 文本 + COM1 + 8042 键盘 | **一半**（字节 I/O 留，行规程走） |
-| `kernel/driver/atapi.c` | 227 | ATA PIO / ATAPI 包命令 | **协议栈可上移**，端口操作留 |
-| `kernel/fs/isofs.c` | 261 | ISO9660 目录记录解析 | **可上移** |
-| `kernel/fs/vfs.c` | 709 | vnode 层 + tmpfs + ISO vnodeops | **转发层留，后端上移** |
+| `kernel/arch/i386/isa/locore.s` | 1721 | 启动、trap 入口、`inb/outb/insw/outsw`、`rtcin` | **留**（特权指令） |
+| `kernel/arch/i386/isa/pmap.c` | 1700 | 页表 / pmap | **留** |
+| `kernel/arch/i386/isa/machdep.c` | 1128 | 机器相关启动、控制台探测 | **留** |
+| `kernel/arch/i386/i386/cons.c` | 194 | ROM console 桩（实际用 pccon） | **留** |
+| `kernel/other/usermode.c` | 3100 | 进程/调度/信号/fd/系统调用/ELF 装载/**控制台行规程**/**tmpfs 页原语** | **拆**（见第 4 节） |
+| `kernel/other/usermode_asm.s` | 80 | `resume_user` 等 | **留** |
+| `kernel/other/glue.c` | 296 | 内核运行时 glue（printf、panic…） | **留** |
+| `kernel/other/mon.c` | 318 | 板载 monitor（`bsd45>`） | **留** |
+| `kernel/other/stubs.c` | 101 | 4.5BSD 桩 | **留** |
+| `kernel/other/strings.c` | 61 | 内核字符串 | **留** |
+| `kernel/driver/pccon.c` | 264 | VGA 文本 + COM1 + 8042 键盘 | **一半**（字节 I/O 留，行规程走） |
+| `kernel/driver/atapi.c` | 263 | ATA PIO / ATAPI 包命令 | **协议栈可上移**，端口操作留 |
+| `kernel/fs/isofs.c` | 295 | ISO9660 目录记录解析 | **可上移** |
+| `kernel/fs/tmpfs.c` | 352 | tmpfs 后端（**S100.2a 从 vfs.c 拆出**） | **可上移**（已是独立文件） |
+| `kernel/fs/vfs.c` | 500 | vnode 池、`namei()`、挂载表 + ISO9660 vnodeops | **转发层留，ISO 后端待搬** |
 
-**合计约 9.3k 行。**
+**合计约 10.4k 行**（含刚拆出的 352 行 tmpfs；拆分不改变总行数）。
 
 > ⚠️ `kernel/sys/`、`kernel/vm/`、`kernel/net/` 等 4.5BSD 目录**没有编进内核**
 > （只有 `arch/i386/isa/{pmap,machdep}.c` 和 `i386/cons.c` 被选中）。它们是
@@ -96,10 +97,9 @@
 
 | 位置 | 现状 | 应该改为 | 计划 |
 |---|---|---|---|
-| `kernel/fs/vfs.c:73` | tmpfs 数据页直接 `pmap_map()` | KP-2 的 `vfs_page_map()` 包装 | S100.2a |
-| `kernel/fs/vfs.c:30` | 声明了 `extern int user_ok()` 但全文没用到 | 删掉这个声明 | S100.2a |
-| `kernel/fs/vfs.c:473` | ISO vnode 的 read 里直接 `atapi_read()` | 块设备接口 `bdev_read()` | S100.4 |
-| `kernel/fs/isofs.c:79,110,236,291` | 直接 `atapi_read()` / `atapi_present()` | 同上 | S100.4 |
+| `kernel/fs/tmpfs.c:67` | tmpfs 数据页直接 `pmap_map()`（S100.2a 前在 `vfs.c:73`） | KP-2 的 `vfs_page_map()` 包装 | S100.2b |
+| `kernel/fs/vfs.c:178` | ISO vnode 的 read 里直接 `atapi_read()` | 块设备接口 `bdev_read()` | S100.4 |
+| `kernel/fs/isofs.c:79,108,110,236,291` | 直接 `atapi_read()` / `atapi_present()` | 同上 | S100.4 |
 | `kernel/other/usermode.c:1778` | 控制台行规程 `console_read()` 和进程/fd 混在一个文件 | 搬到 `tty_server` | S100.5 |
 | `kernel/other/usermode.c:1200,1502,1953,2111` | 手写 `P_BLOCKED` 状态机 | KP-4 `block_on()/wakeup()` | S100.3 前置 |
 | `kernel/driver/atapi.c` | `inb/outb/insw` + 忙等延时 | 留内核，但包成 bdev 服务（端口代理） | S100.6 |
@@ -115,7 +115,7 @@
 
 | 阶段 | 内容 | 改动面 | 判定点 |
 |---|---|---|---|
-| S100.2a | 把 tmpfs 从 `vfs.c` 搬到 `kernel/fs/tmpfs.c`，`vnodeops` 不变 | 纯搬移，0 行为变化 | 15 套全绿 |
+| S100.2a | 把 tmpfs 从 `vfs.c` 搬到 `kernel/fs/tmpfs.c`，`vnodeops` 不变 | 纯搬移，0 行为变化 | **✅ 2026-11-15 完成，15 套全绿** |
 | S100.3 | tmpfs → `fs_server`（KP-4/6/7 落地） | 新增 ipc.c、fs_server、vfs 转发 | `/tmp` 读写全走 IPC 且 15 套全绿 |
 | S100.4 | ISO9660 → `fs_server`，先落 `bdev_read()` | fs + 块设备接口 | 从 ISO 跑 `/bin/sh` 全绿 |
 | S100.5 | tty 行规程 → `tty_server` | usermode.c 瘦身 | 交互 shell + Ctrl-C 全绿 |

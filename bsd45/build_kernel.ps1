@@ -215,6 +215,7 @@ $c_sources = [ordered]@{
     "mon.o"      = @("c",   "$ws\kernel\other\mon.c")
     "atapi.o"    = @("c",   "$ws\kernel\driver\atapi.c")
     "isofs.o"    = @("c",   "$ws\kernel\fs\isofs.c")
+    "tmpfs.o"    = @("c",   "$ws\kernel\fs\tmpfs.c")
 "vfs.o"      = @("c",   "$ws\kernel\fs\vfs.c")
 }
 

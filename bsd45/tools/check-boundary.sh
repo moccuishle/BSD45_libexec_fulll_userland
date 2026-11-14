@@ -39,7 +39,8 @@ if [ -n "$hard" ]; then
 fi
 echo "  hard rules: OK (0 violations)"
 
-debt=$(grep -nE "$DEBT" kernel/fs/*.c 2>/dev/null || true)
+debt=$(grep -nE "$DEBT" kernel/fs/*.c 2>/dev/null | \
+	grep -vE ':[0-9]+:([[:space:]]*\*|extern )' || true)
 if [ -n "$debt" ]; then
 	n=$(printf '%s\n' "$debt" | wc -l)
 	echo "  known layering debt: $n (see docs/kernel-boundary.md section 4.2)"

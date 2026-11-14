@@ -44,6 +44,21 @@ struct vnode {
 
 extern struct vnode *rootvnode;
 
+/*
+ * VFS core services available to backends (S100.2a): a backend may allocate
+ * a vnode for a lookup result, but must not reach into the pool itself.
+ */
+struct vnode *vn_alloc(void);
+
+/*
+ * Backends (S100.2a: tmpfs lives in tmpfs.c behind these, so vfs.c stays a
+ * forwarding layer and the microkernel variant can replace the backend with
+ * an IPC client without touching namei()/the mount table).
+ */
+void	tmpfs_init(void);
+struct vnode *tmpfs_root(void);
+int	tmpfs_is_root(struct vnode *vp);
+
 void	vfs_init(void);
 int	vfs_namei(const char *path, struct vnode **vpp);
 int	vfs_lookup_parent(const char *path, struct vnode **dvp, char *name);

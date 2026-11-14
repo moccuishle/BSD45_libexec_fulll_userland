@@ -1,33 +1,20 @@
 /*
- * vfs.c - vnode layer over ISO9660 (read-only root) and tmpfs (/tmp).
+ * vfs.c - the vnode layer: vnode pool, namei(), mount table.
  *
- * The ISO backend keeps (lba, size) in the vnode and reads sectors on
- * demand; the tmpfs backend owns a small table of nodes, one page each.
- * Mount points are resolved in namei(): "/tmp" switches from the ISO root
- * to the tmpfs root.
+ * Backends live behind vnodeops:
+ *	ISO9660  (this file, read-only root, (lba, size) in the vnode)
+ *	tmpfs    (tmpfs.c, writable /tmp, one page per file)
+ * Keep this file free of backend internals: it may only use the primitives
+ * listed in docs/kernel-boundary.md (S100.1).
  */
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/errno.h>
 
-#ifndef PAGE_SIZE
-#define	PAGE_SIZE	4096
-#endif
-#ifndef VM_PROT_READ
-#define	VM_PROT_READ	0x1
-#define	VM_PROT_WRITE	0x2
-#endif
-
 #include "atapi.h"
 #include "isofs.h"
 #include "vfs.h"
 
-extern unsigned vfs_page_alloc(void);
-extern void vfs_page_free(unsigned pa);
-extern void vfs_page_unmap(unsigned va);
-extern void vfs_page_stats(unsigned *, unsigned *, unsigned *);
-extern void pmap_map(vm_offset_t, vm_offset_t, vm_offset_t, int);
-extern int user_ok(unsigned, unsigned);
 extern void bcopy(const void *, void *, unsigned);
 extern void bzero(void *, unsigned);
 extern int strcmp(const char *, const char *);
@@ -35,65 +22,11 @@ extern int strncmp(const char *, const char *, unsigned);
 extern char *strchr(const char *, int);
 extern unsigned strlen(const char *);
 
-#define	TMPFS_MAXNODES	32
-#define	TMPFS_NAMELEN	32
-#define	TMPFS_DATASZ	4096
-#define	TMPFS_VA	0xFE600000
-
 #define	ISO_SECTOR	2048
 
-struct tmpfs_node {
-	int		used;
-	int		isdir;
-	char		name[TMPFS_NAMELEN];
-	unsigned char	*data;		/* kernel window VA, 0 = no page */
-	unsigned	pa;		/* backing physical page */
-	unsigned	size;
-};
-
-static struct tmpfs_node tmpfs_nodes[TMPFS_MAXNODES];
-static int	tmpfs_inited;
-
-/*
- * tmpfs data pages are allocated lazily on the first write and handed back
- * by truncate/remove/rmdir, so "echo x > /tmp/f" in a loop reuses one page
- * instead of eating the whole pool.
- */
-static unsigned char *
-tmpfs_getdata(struct tmpfs_node *n, int create)
-{
-	int i = n - tmpfs_nodes;
-
-	if (n->data != 0)
-		return (n->data);
-	if (!create)
-		return (0);
-	n->pa = vfs_page_alloc();
-	n->data = (unsigned char *)(TMPFS_VA + i * PAGE_SIZE);
-	pmap_map((vm_offset_t)n->data, (vm_offset_t)n->pa,
-	    (vm_offset_t)n->pa + PAGE_SIZE, VM_PROT_READ | VM_PROT_WRITE);
-	bzero(n->data, TMPFS_DATASZ);
-	return (n->data);
-}
-
-static void
-tmpfs_putdata(struct tmpfs_node *n)
-{
-
-	if (n->data == 0)
-		return;
-	/* drop the kernel window mapping first, then recycle the page */
-	vfs_page_unmap((unsigned)n->data);
-	vfs_page_free(n->pa);
-	n->data = 0;
-	n->pa = 0;
-	n->size = 0;
-}
-
-struct vnodeops tmpfs_vnodeops;
 struct vnodeops iso_vnodeops;
 
-static struct vnode iso_rootv, tmp_root;
+static struct vnode iso_rootv;
 struct vnode *rootvnode = &iso_rootv;
 
 static unsigned char iso_sec[ISO_SECTOR];
@@ -119,7 +52,7 @@ vn_init(void)
 	}
 }
 
-static struct vnode *
+struct vnode *
 vn_alloc(void)
 {
 	int i;
@@ -141,7 +74,7 @@ void
 vn_put(struct vnode *vp)
 {
 
-	if (vp == 0 || vp == &iso_rootv || vp == &tmp_root)
+	if (vp == 0 || vp == &iso_rootv || tmpfs_is_root(vp))
 		return;
 	if (--vp->ref <= 0) {
 		int i = vp - vnode_pool;
@@ -165,234 +98,6 @@ vfs_stats(unsigned *vtotal, unsigned *vused, unsigned *vfree,
 	*vused = used;
 	*vfree = VNODES - used;
 	vfs_page_stats(pnalloc, pnfree, pninuse);
-}
-
-/* ---------------------------------------------------------------- tmpfs */
-
-static struct tmpfs_node *
-tmpfs_find(const char *name)
-{
-	int i;
-
-	for (i = 0; i < TMPFS_MAXNODES; i++)
-		if (tmpfs_nodes[i].used &&
-		    strcmp(tmpfs_nodes[i].name, name) == 0)
-			return (&tmpfs_nodes[i]);
-	return (0);
-}
-
-static struct tmpfs_node *
-tmpfs_create_node(const char *name, int isdir)
-{
-	struct tmpfs_node *n;
-	int i, len;
-
-	len = strlen(name);
-	if (len == 0 || len >= TMPFS_NAMELEN)
-		return (0);
-	if ((n = tmpfs_find(name)) != 0)
-		return (n->isdir == isdir ? n : 0);
-	for (i = 0; i < TMPFS_MAXNODES; i++) {
-		if (tmpfs_nodes[i].used)
-			continue;
-		n = &tmpfs_nodes[i];
-		bzero(n, sizeof(*n));
-		n->used = 1;
-		n->isdir = isdir;
-		bcopy(name, n->name, len + 1);
-		/* the data page is created on the first write */
-		return (n);
-	}
-	return (0);
-}
-
-static int
-tmpfs_lookup_op(struct vnode *dv, const char *name, struct vnode **vpp)
-{
-	struct tmpfs_node *n;
-	struct vnode *vp;
-
-	if (dv != &tmp_root)
-		return (-ENOENT);
-	n = tmpfs_find(name);
-	if (n == 0)
-		return (-ENOENT);
-	vp = vn_alloc();
-	if (vp == 0)
-		return (-ENOMEM);
-	vp->type = n->isdir ? VDIR : VREG;
-	vp->ops = &tmpfs_vnodeops;
-	vp->node = n - tmpfs_nodes;
-	*vpp = vp;
-	return (0);
-}
-
-static int
-tmpfs_getattr_op(struct vnode *vp, unsigned *mode, unsigned *size)
-{
-	struct tmpfs_node *n;
-
-	if (vp->node < 0) {		/* the tmpfs root */
-		*mode = 0040755;
-		*size = 0;
-		return (0);
-	}
-	n = &tmpfs_nodes[vp->node];
-	*mode = n->isdir ? 0040755 : 0100644;
-	*size = n->isdir ? 0 : n->size;
-	return (0);
-}
-
-static int
-tmpfs_read_op(struct vnode *vp, unsigned off, void *buf, unsigned len)
-{
-	struct tmpfs_node *n;
-
-	if (vp->node < 0)
-		return (-EISDIR);
-	n = &tmpfs_nodes[vp->node];
-	if (n->isdir)
-		return (-EISDIR);
-	if (n->data == 0 || off >= n->size)
-		return (0);
-	if (len > n->size - off)
-		len = n->size - off;
-	bcopy(n->data + off, buf, len);
-	return ((int)len);
-}
-
-static int
-tmpfs_write_op(struct vnode *vp, unsigned off, const void *buf, unsigned len)
-{
-	struct tmpfs_node *n;
-
-	if (vp->node < 0)
-		return (-EISDIR);
-	n = &tmpfs_nodes[vp->node];
-	if (n->isdir)
-		return (-EISDIR);
-	if (off >= TMPFS_DATASZ)
-		return (-ENOSPC);
-	if (len > TMPFS_DATASZ - off)
-		len = TMPFS_DATASZ - off;
-	if (tmpfs_getdata(n, 1) == 0)
-		return (-ENOSPC);
-	bcopy(buf, n->data + off, len);
-	if (off + len > n->size)
-		n->size = off + len;
-	return ((int)len);
-}
-
-static int
-tmpfs_readdir_op(struct vnode *vp, unsigned *cookie, char *name, int *isdir)
-{
-	unsigned i;
-
-	for (i = *cookie; i < TMPFS_MAXNODES; i++) {
-		if (!tmpfs_nodes[i].used)
-			continue;
-		*cookie = i + 1;
-		bcopy(tmpfs_nodes[i].name, name,
-		    strlen(tmpfs_nodes[i].name) + 1);
-		*isdir = tmpfs_nodes[i].isdir;
-		return (0);
-	}
-	*cookie = TMPFS_MAXNODES;
-	return (1);
-}
-
-static int
-tmpfs_create_op(struct vnode *dv, const char *name, struct vnode **vpp)
-{
-	struct tmpfs_node *n;
-	struct vnode *vp;
-
-	if (dv != &tmp_root)
-		return (-ENOENT);
-	n = tmpfs_create_node(name, 0);
-	if (n == 0)
-		return (-ENOSPC);
-	vp = vn_alloc();
-	if (vp == 0)
-		return (-ENOMEM);
-	vp->type = VREG;
-	vp->ops = &tmpfs_vnodeops;
-	vp->node = n - tmpfs_nodes;
-	*vpp = vp;
-	return (0);
-}
-
-static int
-tmpfs_remove_op(struct vnode *dv, const char *name)
-{
-	struct tmpfs_node *n;
-
-	if (dv != &tmp_root)
-		return (-ENOENT);
-	n = tmpfs_find(name);
-	if (n == 0 || n->isdir)
-		return (-ENOENT);
-	tmpfs_putdata(n);
-	n->used = 0;
-	return (0);
-}
-
-static int
-tmpfs_mkdir_op(struct vnode *dv, const char *name)
-{
-
-	if (dv != &tmp_root)
-		return (-ENOENT);
-	if (tmpfs_find(name) != 0)
-		return (-EEXIST);
-	return (tmpfs_create_node(name, 1) ? 0 : -ENOSPC);
-}
-
-static int
-tmpfs_truncate_op(struct vnode *vp)
-{
-	struct tmpfs_node *n = &tmpfs_nodes[vp->node];
-
-	if (n->isdir)
-		return (-EISDIR);
-	tmpfs_putdata(n);
-	return (0);
-}
-
-static int
-tmpfs_rmdir_op(struct vnode *dv, const char *name)
-{
-	struct tmpfs_node *n;
-
-	if (dv != &tmp_root)
-		return (-ENOENT);
-	n = tmpfs_find(name);
-	if (n == 0 || !n->isdir)
-		return (-ENOENT);
-	tmpfs_putdata(n);
-	n->used = 0;
-	return (0);
-}
-
-static int
-tmpfs_rename_op(struct vnode *dv, const char *old, const char *new)
-{
-	struct tmpfs_node *n;
-	int len;
-
-	if (dv != &tmp_root)
-		return (-EROFS);
-	n = tmpfs_find(old);
-	if (n == 0)
-		return (-ENOENT);
-	if (tmpfs_find(new) != 0)
-		return (-EEXIST);
-	len = strlen(new);
-	if (len == 0 || len >= TMPFS_NAMELEN)
-		return (-ENAMETOOLONG);
-	bzero(n->name, TMPFS_NAMELEN);
-	bcopy(new, n->name, len + 1);
-	return (0);
 }
 /* ---------------------------------------------------------------- ISO9660 */
 
@@ -498,18 +203,11 @@ struct vnodeops iso_vnodeops = {
 	0, 0, 0, 0, 0
 };
 
-struct vnodeops tmpfs_vnodeops = {
-	tmpfs_lookup_op, tmpfs_getattr_op, tmpfs_read_op, tmpfs_write_op,
-	tmpfs_readdir_op, tmpfs_create_op, tmpfs_remove_op,
-	tmpfs_mkdir_op, tmpfs_rmdir_op, tmpfs_truncate_op,
-	tmpfs_rename_op
-};
-
 
 /*
  * S10.4: compose an absolute path from cwd + in.  This is the ONLY place
  * that knows about the cwd; vfs_namei()/vfs_lookup_parent() keep taking
- * absolute paths exactly as before, so the tmpfs "dv == &tmp_root" identity
+ * absolute paths exactly as before, so a backend's "dv == my root" identity
  * checks are unaffected.
  */
 int
@@ -575,9 +273,11 @@ static void mount_add(const char *path, struct vnode *root);
 void
 vfs_init(void)
 {
-	if (tmpfs_inited)
+	static int vfs_inited;
+
+	if (vfs_inited)
 		return;
-	tmpfs_inited = 1;
+	vfs_inited = 1;
 	vn_init();
 	bzero(&iso_rootv, sizeof(iso_rootv));
 	iso_rootv.ref = 1;
@@ -585,14 +285,10 @@ vfs_init(void)
 	iso_rootv.ops = &iso_vnodeops;
 	iso_rootv.lba = iso_root();
 	iso_rootv.size = iso_root_size();
-	bzero(&tmp_root, sizeof(tmp_root));
-	tmp_root.ref = 1;
-	tmp_root.type = VDIR;
-	tmp_root.ops = &tmpfs_vnodeops;
-	tmp_root.node = -1;
+	tmpfs_init();
 	rootvnode = &iso_rootv;
 	mount_add("/", &iso_rootv);
-	mount_add("/tmp", &tmp_root);
+	mount_add("/tmp", tmpfs_root());
 }
 
 /*
@@ -627,13 +323,13 @@ vfs_namei(const char *path, struct vnode **vpp)
 		name[n] = 0;
 
 		if (vp == rootvnode && strcmp(name, "tmp") == 0)
-			next = &tmp_root;
+			next = tmpfs_root();
 		else {
 			rv = vp->ops->lookup(vp, name, &next);
 			if (rv < 0)
 				return (rv);
 		}
-		if (vp != rootvnode && vp != &tmp_root)
+		if (vp != rootvnode && !tmpfs_is_root(vp))
 			vn_put(vp);
 		vp = next;
 		if (*slash == 0) {
@@ -789,7 +485,7 @@ vfs_mount_list(char *buf, unsigned len)
 	int i;
 
 	for (i = 0; i < nmounts; i++) {
-		int tmp = (mounts[i].m_root == &tmp_root);
+		int tmp = tmpfs_is_root(mounts[i].m_root);
 
 		o = app_str(buf, o, len, mounts[i].m_path);
 		o = app_str(buf, o, len, tmp ? " tmpfs lba=" : " iso9660 lba=");

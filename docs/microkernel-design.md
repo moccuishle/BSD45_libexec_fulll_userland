@@ -27,7 +27,7 @@
 
 | 维度 | 方案 A：宏内核基线（当前 `bsd45`） | 方案 B：微内核化 |
 |---|---|---|
-| 内核规模 | 约 9.3k 行全在 ring0 | 约 6.5k 行在 ring0 + 服务约 1.5k 行用户态 |
+| 内核规模 | 约 10.4k 行全在 ring0 | 约 7k 行在 ring0 + 服务约 2k 行用户态 |
 | 一次 `read()` | 1 次 syscall + 直接调用 `atapi_read` | 1 次 syscall + 2 次 IPC 往返（VFS↔fs_server）+ 1 次 bdev |
 | 崩溃影响 | 任一 FS/驱动 bug = 整机 TRAP | 服务崩溃 = 该文件系统不可用，其他照常 |
 | 调试 | 内核断点，符号齐全 | 服务可用普通用户态调试，但 IPC 协议要一起看 |
@@ -149,7 +149,7 @@ init:   exec /bin/sh
 | 层 | 文件 | 角色 |
 |---|---|---|
 | `kernel/fs/vfs.c` | 保留 | 路径解析、vnode 池、挂载表；**不再实现 tmpfs/iso** |
-| `kernel/fs/tmpfs.c`（新） | 宏内核变体 | 现有 `vfs.c` 里的 tmpfs 代码原样搬出 |
+| `kernel/fs/tmpfs.c` | 宏内核变体 | 现有 `vfs.c` 里的 tmpfs 代码原样搬出（**S100.2a 已落地**） |
 | `kernel/fs/ipc_vfs.c`（新） | 微内核变体 | 把每个 vnodeops 调用翻译成 IPC |
 | `servers/fs_server.c`（新，用户态） | 微内核变体 | 真正的 tmpfs/ISO 实现 |
 
@@ -222,3 +222,4 @@ bash build_all.sh --variant mono|micro
 | 日期 | 内容 |
 |---|---|
 | 2026-11-15 | 初稿（S100.2）：IPC 契约、服务布局、构建变体、故障模型 |
+| 2026-11-15 | S100.2a 落地：tmpfs 已拆到 `kernel/fs/tmpfs.c`（15 套全绿），`vfs.c` 只剩转发层 + ISO 后端 |
