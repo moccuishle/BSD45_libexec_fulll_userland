@@ -848,6 +848,46 @@ vmnet8 NAT）：`gcc 15.2.0 + gcc-multilib + libc6-dev-i386`、
 **下一步**：加 `-Variant mono|micro` 构建开关（先只认 `mono`，零行为变化），
 然后 S100.3 落 KP-4/6/7 + `fs_server`。
 
+## 0.15 2026-11-15 4.5BSD VFS/VM 缓存层盘点与路线（「真正的 cache」前置调查）
+
+详细版见仓库根 [`恢复.md`](../恢复.md)。结论：你列的 VFS/VM 文件**大多存在，但不能
+直接“加进构建”**。
+
+**现状**
+
+| 文件 | 真实状态 |
+|---|---|
+| `kernel/sys/vfs_bio.c` | **函数体被删空**：`bread()` 只剩 `/* Body deleted. */ return (EIO);`（vfs_bio.c:142-154），`bwrite/getblk/brelse/biodone` 同样；只有 `bufinit` 和 hash/队列管理是真的 |
+| `kernel/sys/vfs_cache.c` | 完整 4.5BSD 实现，但用 `(dvp)->v_id`（:75）——我们的 `struct vnode` 没有 `v_id` |
+| `vfs_subr.c`(1782) / `vfs_lookup.c`(645) / `vfs_vnops.c`(449) / `vfs_syscalls.c`(2417) / `vfs_cluster.c`(756) | 4.5BSD 完整源码，但编译不了：依赖 `ucred`/`mount`/`uio`/`VOP_*`/`vnode_if.h`/`sleep-wakeup`/`M_*` malloc/`bdevsw->d_strategy` |
+| `vm_page.c`(710) / `vm_object.c`(1449) / `vm_fault.c`(1037) / `vm_pageout.c`(571) / `vnode_pager.c`(582) | 完整 4.5BSD 源码，依赖 4.5BSD 的 `vm_map`/`proc`/pager 注册/`vm_page` 队列；我们的内核只有 `pmap`，没有 VM 对象层 |
+| `kernel/fs/ufs/ufs/`、`kernel/fs/ufs/ffs/` | **只有 `config.mk`，没有任何 .c/.h** |
+| `kernel/sys/config.mk` | 这些文件名只是注释里的 “sources in this directory”，`obj-y` 全空，构建从未编译它们 |
+
+当前构建只编 19 个目标（locore/pmap/machdep/cons/lib/usermode/embed/pccon/stubs/
+glue/mon/atapi/isofs/tmpfs/vfs），4.5BSD 的 VFS/VM 一个都没进。
+
+**为什么不能“加进构建就行”**：这些文件冲着 4.5BSD 内核核心写（`struct buf`、
+带 `v_id` 的 `vnode`、`mount`、`ucred`、`uio`、`VOP_*`、`vnode_if.h`、`sleep/wakeup`、
+`M_*` malloc、`bdevsw/strategy`）；我们的端口有意重写成了最小核心（自定义
+`struct uproc`、协作式调度、`vfs.c` + `vnodeops`、同步 `atapi_read`）。
+
+**两条路线**
+
+- **路线 A：真·移植 4.5BSD 内核核心**——恢复 `vfs_bio.c` 删除体、生成 `vnode_if`、
+  带起 `init_main/kern_synch/kern_malloc/kern_descrip/kern_exec/fork/sig`、
+  `vfs_init/vfs_conf`、`bdevsw/strategy`、`ucred/mount`，替换 `usermode.c` 的自定义
+  syscall 层；还要补 ATA 硬盘驱动（现在只有只读 CD），否则 FFS 无设备可挂。
+  代价：长期不可启动，15 套暂时用不上。
+- **路线 B：按 4.5BSD 职责划分，把真正的缓存算法写进当前端口**（推荐先做）：
+  B1 `vfs_bio.c` buffer cache（hash + LRU + 脏页 + hit/miss）+ `vfs_cluster.c` 预读；
+  B2 `vfs_cache.c` name cache（给 vnode 加 `v_id`）；B3 `vm_object/vm_page/vnode_pager`
+  文件页缓存；B4 UFS/FFS 暂缓（缺驱动、缺源码）。
+
+**建议**：先做 B1——让 ISO9660 的 `read`/`readdir` 走真正的 buffer cache，
+验收为 15 套全绿 + `cat` 同一文件第二遍的 `atapi_read` 次数显著下降；
+之后再 B2、B3。算法以后可原样搬进路线 A 的 4.5BSD 结构，不会白做。
+
 ## S100（长期方向，未开工）微内核与宏内核的边界：盘点、对照实验与取舍
 
 > 这是**架构方向**任务，不是功能增量。它不影响 S11–S99 的日常功能开发，

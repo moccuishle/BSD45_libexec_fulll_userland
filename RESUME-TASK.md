@@ -22,3 +22,6 @@ bash tools/test_s9.sh
 > 源码已合并进仓库：`bsd45/kernel/`（4.5BSD sys 树）+
 > `bsd45/libc/bsd/`（`/bin/sh` 用的 4.5BSD 用户态源码）。
 > 原来的 `bsd45/src/` 已删除，构建**不需要任何 tarball**。
+
+> 4.5BSD VFS/VM 缓存层的盘点与两条路线（真·移植 vs 端口内实现），见
+> [`恢复.md`](恢复.md) 与 `bsd45/RESUME-TASK.md` 的 0.15 节。
