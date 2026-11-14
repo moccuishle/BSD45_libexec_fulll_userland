@@ -5,6 +5,11 @@ VFS（ISO9660 + tmpfs）、`init(8)`、`execve`、fork/wait4、控制台 tty、�
 目录遍历，并把 4.5BSD 的 libc / `/bin/sh` 交叉编译成 i386 ELF 放进 ISO。
 启动后进入用户态就是真正的 BSD `/bin/sh`（`# ` 提示符）。
 
+![BSD45 启动到 BSD /bin/sh：ls /bin、/tmp 读写与管道](screenshot.png)
+
+> 截图是 QEMU 串口里的实际会话（S9 验收场景）：`init` 启动 `/bin/sh`、
+> `ls /bin`、`echo vfs-ok > /tmp/a`、`cat /tmp/a`、`echo hi-vfs | cat`、`exit 0`。
+
 ## 从哪看起
 
 | 内容 | 位置 |
