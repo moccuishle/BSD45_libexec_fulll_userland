@@ -430,27 +430,40 @@ load_elf(unsigned pdpa, const unsigned char *img, unsigned len, unsigned *entry)
 		const unsigned *ph = (const unsigned *)(img + phoff + i * 32);
 		unsigned type = ph[0], off = ph[1], vaddr = ph[2];
 		unsigned filesz = ph[4], memsz = ph[5];
+		unsigned poff = vaddr & (PAGE_SIZE - 1);
+		unsigned base = vaddr - poff;
+		unsigned fbase = off - poff;	/* file offset of vaddr's page */
 		unsigned n;
 
 		if (type != 1)
 			continue;
-		for (n = 0; n < memsz; n += PAGE_SIZE) {
+		/*
+		 * A PT_LOAD segment is page-congruent but not necessarily
+		 * page-aligned: ld -m elf_i386 gives .data a p_vaddr like
+		 * 0x080550e0 (the PE/objcopy path happens to align it, which
+		 * is why this only showed up on the Linux build).  Map whole
+		 * pages from the page containing p_vaddr and let the file
+		 * bytes land at their in-page offset.
+		 */
+		for (n = 0; n < memsz + poff; n += PAGE_SIZE) {
 			unsigned pa = page_alloc();
 			char *dst;
-			unsigned chunk = memsz - n;
+			unsigned chunk = memsz + poff - n;
+			unsigned pos = fbase + n;	/* file offset of this page */
+			unsigned fend = off + filesz;	/* segment's file end */
 
 			if (chunk > PAGE_SIZE)
 				chunk = PAGE_SIZE;
 			zero_page(pa);
 			dst = map_page(SCRATCH_PAGE, pa);
-			if (n < filesz) {
-				unsigned c = filesz - n;
+			if (pos < fend) {
+				unsigned c = fend - pos;
 
 				if (c > chunk)
 					c = chunk;
-				bcopy(img + off + n, dst, c);
+				bcopy(img + pos, dst, c);
 			}
-			user_map(pdpa, vaddr + n, pa);
+			user_map(pdpa, base + n, pa);
 		}
 	}
 }

@@ -739,6 +739,52 @@ date-st=0
 **已知限制**：没有时钟中断，`tv_usec` 恒 0；`sleep(1)` 仍是忙等假实现，
 真 sleep 要等时钟中断/超时队列（与 S10.2 的限制同源）。
 
+## 0.12 2026-11-15 Linux（Ubuntu 26.04 + VMware）构建与验收 ✅
+
+环境：Ubuntu 26.04 LTS VM（VMware，用户 `jialiang`，`192.168.209.128`，
+vmnet8 NAT）：`gcc 15.2.0 + gcc-multilib + libc6-dev-i386`、
+`genisoimage 1.1.11`、`qemu-system-i386 10.2.1`（无 KVM，纯 TCG）、
+`bison 3.8.2`、`flex 2.6.4`、`python3 3.14`、`git 2.53`。
+
+送代码用 `git archive HEAD | tar -x`：**不要**直接拷 Windows 工作区，CRLF 会让
+`set -o pipefail` 报 `invalid option name`，全盘皆错。
+
+`bash build_all.sh` 暴露了 4 个只存在于 `.sh` 路径的问题（Windows 一直走
+`build_*.ps1`，这些分支从没被执行过）：
+
+1. **头文件视图**：`build_sh.sh` 拷的是 `kernel/include/{sys,machine}`，而
+   `machine/endian.h` 只在 `libc/bsd/sys/i386/include` 里 → 86 个文件
+   `fatal error: machine/endian.h`。改成与 `build_sh.ps1` 一致：
+   `usr/include`、`usr/sys/sys`、`usr/sys/i386/include → machine/`、
+   `usr/sys/net`，hp300 的 ansi/limits/float 兜底；最后再把项目自己的
+   `ctype.h/stdarg.h/histedit.h` 盖回去（否则 4.5BSD 的 ctype.h 会盖掉
+   4.3-Reno 的 `_ctype_` 表，`_N` 未定义）。
+2. **生成 sh 源码**只拷 `*.c/*.h/*.y/*.l`，漏了 `nodetypes`、`nodes.c.pat`、
+   `builtins.def` → `mknodes: Can't open nodetypes`、`nodes.h` 缺失，14 个文件
+   失败；改成拷全部普通文件。
+3. **libkern 头**：`build_kernel.sh` 把 `libkern.h` 放 `inc/lib/`，而 4.5BSD 的
+   `<sys/systm.h>` 仍 `#include <libkern/libkern.h>` → 内核 10 个文件失败；
+   补 `inc/libkern/libkern.h`。
+4. **可执行位**：仓库里的 `.sh` 都是 100644（Windows 提交、`core.filemode=false`），
+   Linux checkout 后 `tools/run_qemu_test.sh: Permission denied`，15 套全红；
+   现在索引里改成 100755。
+
+**内核真 bug（两端都受影响，Linux 先暴露）**：`load_elf()` 假设每个 PT_LOAD 的
+`p_vaddr` 页对齐。`ld -m elf_i386` 给 `.data` 的 `p_vaddr` 是 `0x080550e0`
+（页内偏移 0xe0），旧代码把 `img + p_offset` 直接拷到页首，整个 `.data`
+错位 0xe0 字节（症状：`/test` 里 `cr2=0x20202028` 的 TRAP 12、
+`arith` 里出现空格）；PE/objcopy 生成的段恰好页对齐，所以 Windows 从没踩到。
+现在按 `p_vaddr & 0xfff` 算页内偏移，从「包含 p_vaddr 的页」开始映射，
+拷贝终点用 `p_offset + p_filesz`（`p_filesz` 是长度，不是文件末偏移——
+第一版这里写错，把多页 text 的尾巴清零，Windows 立刻 `usermode` 就 TRAP 12）。
+
+修完两端都全绿：
+
+| 平台 | 构建 | ISO | 15 套验收 |
+|---|---|---|---|
+| Windows（ucrt64 GCC 16.2 + xorriso） | `build_all.ps1` | 4,595,712 B | **ALL SUITES PASSED** |
+| Ubuntu 26.04（GCC 15.2 + genisoimage，TCG） | `build_all.sh` | 4,257,792 B | **ALL SUITES PASSED** |
+
 ## S100（长期方向，未开工）微内核与宏内核的边界：盘点、对照实验与取舍
 
 > 这是**架构方向**任务，不是功能增量。它不影响 S11–S99 的日常功能开发，

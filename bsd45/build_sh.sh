@@ -33,22 +33,31 @@ fail=0
 
 prepare_headers() {
     mkdir -p "$incu/sys" "$incu/machine" "$incu/net"
-    [ -d "$incu" ] || return 0
     cp -f "$ws/libc/include/stdarg.h" "$incu/stdarg.h"
     cp -f "$ws/libc/include/ctype.h"  "$incu/ctype.h"
     cp -f "$ws/libc/include/histedit.h" "$incu/histedit.h"
     [ -f "$incu/errno.h" ] && return 0
     step "preparing libc header view"
-    # 4.5BSD usr/include + the kernel headers, from the merged layout
+    # Mirror build_sh.ps1 exactly: 4.5BSD usr/include, sys/sys (also at the
+    # top level, without overwriting), sys/i386/include -> machine/, sys/net,
+    # and the hp300 fallbacks for ansi/limits/float.
     cp -f "$usr/include/"*.h "$incu/" 2>/dev/null
-    cp -f "$ws/kernel/include/sys/"*.h "$incu/" 2>/dev/null
-    cp -f "$ws/kernel/include/sys/"*.h "$incu/sys/" 2>/dev/null
-    cp -f "$ws/kernel/include/machine/"*.h "$incu/machine/" 2>/dev/null
-    cp -f "$ws/kernel/net/net/"*.h "$incu/net/" 2>/dev/null
-    cp -f "$ws/kernel/include/machine/ansi.h"   "$incu/machine/ansi.h"   2>/dev/null
-    cp -f "$ws/kernel/include/machine/limits.h" "$incu/machine/limits.h" 2>/dev/null
-    cp -f "$ws/kernel/include/machine/float.h"  "$incu/machine/float.h"  2>/dev/null
-    cp -f "$ws/kernel/include/sys/termios.h" "$incu/termios.h" 2>/dev/null
+    for h in "$usr/sys/sys/"*.h; do
+        dst="$incu/$(basename "$h")"
+        [ -e "$dst" ] || cp -f "$h" "$dst"
+    done
+    cp -f "$usr/sys/sys/"*.h "$incu/sys/" 2>/dev/null
+    cp -f "$usr/sys/i386/include/"*.h "$incu/machine/" 2>/dev/null
+    cp -f "$usr/sys/net/"*.h "$incu/net/" 2>/dev/null
+    cp -f "$usr/sys/hp300/include/ansi.h"   "$incu/machine/ansi.h"
+    cp -f "$usr/sys/hp300/include/limits.h" "$incu/machine/limits.h"
+    cp -f "$usr/sys/hp300/include/float.h"  "$incu/machine/float.h"
+    cp -f "$usr/sys/sys/termios.h" "$incu/termios.h"
+    # The 4.5BSD usr/include copies above overwrite these three; put the
+    # project's versions back on top, exactly like build_sh.ps1 does.
+    cp -f "$ws/libc/include/stdarg.h" "$incu/stdarg.h"
+    cp -f "$ws/libc/include/ctype.h"  "$incu/ctype.h"
+    cp -f "$ws/libc/include/histedit.h" "$incu/histedit.h"
 }
 
 prepare_headers
@@ -172,9 +181,12 @@ libobjs=("${objs[@]}")
 
 if [ "$target" = "sh" ]; then
     step "generating sh sources"
-    cp -f "$shsrc/"*.c "$shsrc/"*.h "$shsrc/"*.y "$shsrc/"*.l "$gen/" 2>/dev/null
-    cp -f "$shsrc/"mktokens "$shsrc/"mkbuiltins "$gen/" 2>/dev/null
-    for f in token.def builtins.c builtins.h; do cp -f "$shsrc/$f" "$gen/" 2>/dev/null; done
+    # Copy every regular file, like build_sh.ps1: the generators need the
+    # auxiliary data files too (nodetypes, nodes.c.pat, builtins.def, ...),
+    # not just *.c/*.h/*.y/*.l.
+    for f in "$shsrc"/*; do
+        [ -f "$f" ] && cp -f "$f" "$gen/"
+    done
     cp -f "$ws/libc/src/"* "$gen/" 2>/dev/null
 
     ( cd "$gen" && sh mktokens ) || true

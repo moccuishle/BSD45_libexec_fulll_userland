@@ -24,6 +24,10 @@ cp -f "$src/vm/"*.h               "$inc/vm/"       2>/dev/null
 cp -f "$src/include/machine/"*.h  "$inc/machine/"  2>/dev/null
 cp -f "$src/include/machine/"*.h  "$inc/i386/"     2>/dev/null
 cp -f "$src/lib/libkern.h"    "$inc/lib/libkern.h" 2>/dev/null
+# 4.5BSD's <sys/systm.h> still includes <libkern/libkern.h>; build_kernel.ps1
+# keeps a copy at that old path, so do the same here.
+mkdir -p "$inc/libkern"
+cp -f "$src/lib/libkern.h"    "$inc/libkern/libkern.h" 2>/dev/null
 
 if ! grep -q 'typedef int register_t;' "$inc/machine/types.h" 2>/dev/null; then
     printf '\ntypedef int register_t;\ntypedef unsigned int u_register_t;\n' >> "$inc/machine/types.h"
